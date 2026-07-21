@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"io"
 	"log/slog"
 	"net"
@@ -10,6 +11,15 @@ import (
 	"testing"
 	"time"
 )
+
+// framedMessage builds a length-prefixed protocol message (type, length, body).
+func framedMessage(msgType byte, body []byte) []byte {
+	out := make([]byte, 5+len(body))
+	out[0] = msgType
+	binary.BigEndian.PutUint32(out[1:5], uint32(4+len(body)))
+	copy(out[5:], body)
+	return out
+}
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -111,17 +121,18 @@ func TestServer_RefusesSSLForwardsStartupAndPipes(t *testing.T) {
 		t.Fatal("upstream never received the startup packet")
 	}
 
-	// Bytes flow in both directions (the fake upstream echoes).
-	payload := []byte("SELECT 1")
-	if _, err := c.Write(payload); err != nil {
-		t.Fatalf("write payload: %v", err)
+	// A framed protocol message flows through the message-aware relay in both
+	// directions and comes back byte-for-byte (the fake upstream echoes).
+	msg := framedMessage('Q', []byte("SELECT 1\x00"))
+	if _, err := c.Write(msg); err != nil {
+		t.Fatalf("write message: %v", err)
 	}
-	echo := make([]byte, len(payload))
+	echo := make([]byte, len(msg))
 	if _, err := io.ReadFull(c, echo); err != nil {
 		t.Fatalf("read echo: %v", err)
 	}
-	if !bytes.Equal(echo, payload) {
-		t.Fatalf("echo = %q, want %q", echo, payload)
+	if !bytes.Equal(echo, msg) {
+		t.Fatalf("echo = %x, want %x", echo, msg)
 	}
 }
 
