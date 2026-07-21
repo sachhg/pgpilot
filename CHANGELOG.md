@@ -28,3 +28,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `-primary`). An integration test (`make itest`) asserts that psql through the
   proxy behaves identically to psql direct. Rationale recorded in
   `docs/adr/0002-transparent-proxy-ssl-refusal.md`.
+- Protocol codec (Phase 3): `internal/protocol` decodes the wire messages
+  pgpilot routes on (Query, Parse, Bind, Describe, Execute, Sync, Terminate,
+  ReadyForQuery, CommandComplete, ErrorResponse, RowDescription, DataRow) via
+  `jackc/pgx/v5/pgproto3`, with round-trip tests and a panic-safe, fuzzed
+  decoder. The proxy now relays messages frame-by-frame instead of as opaque
+  bytes and tracks each session's transaction status from ReadyForQuery
+  (`I`/`T`/`E`). `cmd/pgpilot` gains a `-log-level` flag. Rationale recorded in
+  `docs/adr/0003-message-aware-relay.md`.
+
+### Dependencies
+
+- Added `github.com/jackc/pgx/v5` v5.7.1 (pinned to keep the module's `go 1.22`
+  floor) for its `pgproto3` wire-protocol codec.
