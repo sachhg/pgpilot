@@ -80,9 +80,44 @@ make build   # compile the binary into bin/
 make test    # run tests with the race detector
 make lint    # run golangci-lint
 make up      # bring up the local primary + replica cluster
+make smoke   # assert the cluster replicates (run after `make up`)
 make down    # tear the cluster down
 make bench   # run benchmarks
 ```
+
+## Development cluster
+
+`make up` brings up a real replication topology with docker-compose: one
+Postgres 16 primary and two streaming replicas.
+
+| Service    | Host port | Role                          |
+| ---------- | --------: | ----------------------------- |
+| `primary`  |     55432 | accepts writes                |
+| `replica1` |     55433 | read-only hot standby         |
+| `replica2` |     55434 | read-only hot standby         |
+
+(Host ports use a high range so they never collide with a local Postgres on
+5432; the backends are internal to the proxy and exposed only for convenience.)
+
+The primary is configured for physical streaming replication with a dedicated
+replication slot per standby. Each replica bootstraps by cloning the primary
+with `pg_basebackup` on its first start, then streams WAL to stay current. The
+seeded schema lives in `docker/primary/initdb/`.
+
+```sh
+make up                       # primary + 2 replicas, waits until healthy
+make smoke                    # a write on the primary is served by both replicas
+psql -h localhost -p 55432 -U pgpilot pgpilot   # connect to the primary
+make down                     # stop and delete the cluster's volumes
+```
+
+The smoke test (`test/smoke`) writes a unique row to the primary, waits for each
+replica to replay past the write's LSN, and asserts the row is readable there —
+the same read-your-writes invariant pgpilot will enforce automatically once LSN
+fencing lands in Phase 7.
+
+The design decisions behind the cluster are recorded in
+[`docs/adr/0001-dev-cluster-replication.md`](docs/adr/0001-dev-cluster-replication.md).
 
 ## License
 
