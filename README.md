@@ -45,24 +45,26 @@ The goal is to do one thing — correct, observable read/write routing — well.
 ## Status
 
 Early development, built in phases (see the roadmap). Not production-ready yet.
+Today pgpilot is a **transparent proxy**: it accepts connections and forwards
+them, untouched, to a single primary. Routing and fencing arrive in later phases.
 
 ## Roadmap
 
-| Phase | Focus                                                        |
-| ----: | ------------------------------------------------------------ |
-|     0 | Repo hygiene, CI, licensing                                  |
-|     1 | Dev cluster: primary + 2 streaming replicas (docker-compose) |
-|     2 | Transparent proxy (byte-level passthrough)                   |
-|     3 | Protocol codec (typed frontend/backend messages)            |
-|     4 | Connection pooling (session + transaction)                  |
-|     5 | Query classification (read vs. write via pg_query)          |
-|     6 | Replica registry, health polling, circuit breakers          |
-|     7 | LSN fencing                                                  |
-|     8 | Routing policy engine                                        |
-|     9 | Observability (Prometheus, structured logs, pprof)          |
-|    10 | Fault-injection harness                                      |
-|    11 | Benchmarks vs. direct connection and pgbouncer              |
-|    12 | Docs and the v0.1.0 release                                 |
+| Phase | Focus                                                        | Status |
+| ----: | ------------------------------------------------------------ | ------ |
+|     0 | Repo hygiene, CI, licensing                                  | done   |
+|     1 | Dev cluster: primary + 2 streaming replicas (docker-compose) | done   |
+|     2 | Transparent proxy (byte-level passthrough)                   | done   |
+|     3 | Protocol codec (typed frontend/backend messages)            | next   |
+|     4 | Connection pooling (session + transaction)                  |        |
+|     5 | Query classification (read vs. write via pg_query)          |        |
+|     6 | Replica registry, health polling, circuit breakers          |        |
+|     7 | LSN fencing                                                  |        |
+|     8 | Routing policy engine                                        |        |
+|     9 | Observability (Prometheus, structured logs, pprof)          |        |
+|    10 | Fault-injection harness                                      |        |
+|    11 | Benchmarks vs. direct connection and pgbouncer              |        |
+|    12 | Docs and the v0.1.0 release                                 |        |
 
 ## Technology
 
@@ -81,6 +83,7 @@ make test    # run tests with the race detector
 make lint    # run golangci-lint
 make up      # bring up the local primary + replica cluster
 make smoke   # assert the cluster replicates (run after `make up`)
+make itest   # assert psql through the proxy matches psql direct
 make down    # tear the cluster down
 make bench   # run benchmarks
 ```
@@ -118,6 +121,30 @@ fencing lands in Phase 7.
 
 The design decisions behind the cluster are recorded in
 [`docs/adr/0001-dev-cluster-replication.md`](docs/adr/0001-dev-cluster-replication.md).
+
+## Running the proxy
+
+pgpilot accepts client connections and forwards them to a single upstream
+primary. It refuses TLS (replying `N` to `SSLRequest`) and passes the startup
+and authentication exchange through untouched, so any auth method the backend
+uses — including SCRAM — works end-to-end.
+
+```sh
+make up                                   # backends on 55432–55434
+make build && ./bin/pgpilot \
+  -listen 127.0.0.1:6432 \
+  -primary 127.0.0.1:55432                # proxy on 6432 -> primary on 55432
+
+# Connect through the proxy exactly as you would connect directly:
+psql "host=localhost port=6432 dbname=pgpilot user=pgpilot sslmode=prefer"
+```
+
+Because TLS is refused for now, clients must permit a cleartext connection to
+pgpilot; libpq's default `sslmode=prefer` falls back automatically, whereas
+`sslmode=require` will fail until TLS termination arrives (see
+[`docs/adr/0002-transparent-proxy-ssl-refusal.md`](docs/adr/0002-transparent-proxy-ssl-refusal.md)).
+`make itest` asserts that a session through the proxy is byte-for-byte
+equivalent to a direct one.
 
 ## License
 
