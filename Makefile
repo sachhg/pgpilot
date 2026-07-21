@@ -5,7 +5,7 @@ COMPOSE := docker compose
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build test lint fmt tidy up down bench smoke clean
+.PHONY: help build test lint fmt tidy up down bench smoke itest clean
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -38,6 +38,9 @@ bench: ## Run Go benchmarks
 
 smoke: ## Run the cluster smoke test (needs `make up` first)
 	go test -tags=integration -count=1 -v ./test/smoke/...
+
+itest: ## Run end-to-end integration tests (needs `make up` first)
+	go test -tags=integration -count=1 -v ./test/integration/...
 
 clean: ## Remove build artifacts
 	rm -rf $(BIN_DIR)
