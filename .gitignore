@@ -1,0 +1,43 @@
+# Compiled binaries / build output
+/bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go test binaries and profiling output
+*.test
+*.out
+*.prof
+/vendor/
+
+# Test & coverage artifacts
+coverage.out
+coverage.html
+*.cover
+*.coverprofile
+
+# Environment files & secrets — never commit these
+.env
+.env.*
+*.pem
+*.key
+*.crt
+
+# Local Postgres data volumes created by docker-compose
+/data/
+pgdata/
+**/pgdata/
+
+# Editor / OS cruft
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# Local agent/harness config
+/.claude/
+
+# Internal build plan — instructions, not part of the shipped product
+/BUILD.md
