@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sachhg/pgpilot/internal/protocol"
 )
 
 // Config configures a proxy Server.
@@ -130,6 +132,8 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 		client:   client,
 		upstream: s.cfg.UpstreamAddr,
 		dialer:   s.dialer,
+		log:      log,
+		tracker:  &protocol.TxTracker{},
 	}
 	if err := sess.serve(ctx); err != nil {
 		log.Warn("session closed", "error", err)

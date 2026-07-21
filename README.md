@@ -45,8 +45,10 @@ The goal is to do one thing — correct, observable read/write routing — well.
 ## Status
 
 Early development, built in phases (see the roadmap). Not production-ready yet.
-Today pgpilot is a **transparent proxy**: it accepts connections and forwards
-them, untouched, to a single primary. Routing and fencing arrive in later phases.
+Today pgpilot is a **protocol-aware transparent proxy**: it forwards every
+connection to a single primary, but it now frames and decodes the wire protocol
+and tracks each session's transaction status. Read/write routing and fencing
+arrive in later phases.
 
 ## Roadmap
 
@@ -55,8 +57,8 @@ them, untouched, to a single primary. Routing and fencing arrive in later phases
 |     0 | Repo hygiene, CI, licensing                                  | done   |
 |     1 | Dev cluster: primary + 2 streaming replicas (docker-compose) | done   |
 |     2 | Transparent proxy (byte-level passthrough)                   | done   |
-|     3 | Protocol codec (typed frontend/backend messages)            | next   |
-|     4 | Connection pooling (session + transaction)                  |        |
+|     3 | Protocol codec (typed frontend/backend messages)            | done   |
+|     4 | Connection pooling (session + transaction)                  | next   |
 |     5 | Query classification (read vs. write via pg_query)          |        |
 |     6 | Replica registry, health polling, circuit breakers          |        |
 |     7 | LSN fencing                                                  |        |
@@ -133,7 +135,8 @@ uses — including SCRAM — works end-to-end.
 make up                                   # backends on 55432–55434
 make build && ./bin/pgpilot \
   -listen 127.0.0.1:6432 \
-  -primary 127.0.0.1:55432                # proxy on 6432 -> primary on 55432
+  -primary 127.0.0.1:55432 \
+  -log-level debug                        # proxy on 6432 -> primary on 55432
 
 # Connect through the proxy exactly as you would connect directly:
 psql "host=localhost port=6432 dbname=pgpilot user=pgpilot sslmode=prefer"
@@ -145,6 +148,25 @@ pgpilot; libpq's default `sslmode=prefer` falls back automatically, whereas
 [`docs/adr/0002-transparent-proxy-ssl-refusal.md`](docs/adr/0002-transparent-proxy-ssl-refusal.md)).
 `make itest` asserts that a session through the proxy is byte-for-byte
 equivalent to a direct one.
+
+### Protocol awareness
+
+Rather than piping opaque bytes, pgpilot frames every message on the wire and
+decodes the ones it routes on, using `jackc/pgx`'s `pgproto3` (see
+[`internal/protocol`](internal/protocol)). It tracks each session's transaction
+status from the backend's ReadyForQuery indicator (`I`/`T`/`E`) — the signal the
+router will use to pin a session to one backend for the life of a transaction.
+Run with `-log-level debug` to watch the transitions:
+
+```
+level=DEBUG msg="transaction status" session=1 status=idle
+level=DEBUG msg="transaction status" session=1 status="in transaction"
+level=DEBUG msg="transaction status" session=1 status=idle
+```
+
+The message decoder is fuzzed and hardened against malformed input; the design
+is recorded in
+[`docs/adr/0003-message-aware-relay.md`](docs/adr/0003-message-aware-relay.md).
 
 ## License
 

@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"sync"
+
+	"github.com/sachhg/pgpilot/internal/protocol"
 )
 
 // sslNotSupported is the single byte a server sends to refuse an SSLRequest or
@@ -14,16 +17,18 @@ import (
 const sslNotSupported = 'N'
 
 // session proxies one client connection: it refuses encryption negotiation,
-// forwards the client's startup packet to the upstream untouched, then pipes
-// bytes in both directions until either side closes.
+// forwards the client's startup packet to the upstream untouched, then relays
+// protocol messages in both directions, tracking transaction status as it goes.
 type session struct {
 	client   net.Conn
 	upstream string
 	dialer   *net.Dialer
+	log      *slog.Logger
+	tracker  *protocol.TxTracker
 }
 
 // serve runs the session to completion. When ctx is cancelled (server
-// shutdown), both connections are closed, which unblocks the copy loops, so no
+// shutdown), both connections are closed, which unblocks the relay, so no
 // goroutine outlives serve.
 func (s *session) serve(ctx context.Context) error {
 	defer func() { _ = s.client.Close() }()
@@ -59,7 +64,7 @@ func (s *session) serve(ctx context.Context) error {
 		return fmt.Errorf("forward startup packet: %w", err)
 	}
 
-	if err := pipe(s.client, up); err != nil {
+	if err := s.relay(s.client, up); err != nil {
 		return fmt.Errorf("relay: %w", err)
 	}
 	return nil
@@ -84,38 +89,56 @@ func (s *session) negotiateStartup() (startupPacket, error) {
 	}
 }
 
-// halfCloser is implemented by *net.TCPConn: it lets one direction signal EOF
-// without tearing down the other, so each side can drain fully.
-type halfCloser interface {
-	CloseWrite() error
-}
-
-// pipe copies bytes in both directions between a and b until both directions
-// reach EOF, then returns. Closing a connection elsewhere (on shutdown)
-// unblocks the copies, so pipe never leaves a goroutine running.
-func pipe(a, b net.Conn) error {
+// relay copies protocol messages in both directions until either side closes.
+// Bytes are forwarded verbatim, so the relay stays transparent even for messages
+// it does not interpret; backend messages are additionally decoded far enough to
+// track transaction status. Each direction half-closes on EOF so both drain.
+func (s *session) relay(client, up net.Conn) error {
 	var wg sync.WaitGroup
 	errc := make(chan error, 2)
 	wg.Add(2)
-	copyDir := func(dst, src net.Conn) {
+
+	go func() { // frontend: client -> upstream
 		defer wg.Done()
-		_, err := io.Copy(dst, src)
-		if hc, ok := dst.(halfCloser); ok {
+		err := protocol.Relay(up, client, nil)
+		if hc, ok := up.(halfCloser); ok {
 			_ = hc.CloseWrite()
 		}
 		errc <- err
-	}
-	go copyDir(a, b)
-	go copyDir(b, a)
+	}()
+	go func() { // backend: upstream -> client
+		defer wg.Done()
+		err := protocol.Relay(client, up, s.trackBackend)
+		if hc, ok := client.(halfCloser); ok {
+			_ = hc.CloseWrite()
+		}
+		errc <- err
+	}()
+
 	wg.Wait()
 	close(errc)
-
 	for err := range errc {
-		if err != nil && !errors.Is(err, io.EOF) && !isClosedConnErr(err) {
+		if err != nil && !isClosedConnErr(err) && !errors.Is(err, io.ErrUnexpectedEOF) {
 			return err
 		}
 	}
 	return nil
+}
+
+// trackBackend updates the session's transaction status from ReadyForQuery.
+func (s *session) trackBackend(msgType byte, body []byte) error {
+	if msgType == protocol.MsgReadyForQuery {
+		if st, ok := protocol.ParseReadyForQuery(body); ok && s.tracker.Update(st) {
+			s.log.Debug("transaction status", "status", st.String())
+		}
+	}
+	return nil
+}
+
+// halfCloser is implemented by *net.TCPConn: it lets one direction signal EOF
+// without tearing down the other, so each side can drain fully.
+type halfCloser interface {
+	CloseWrite() error
 }
 
 // isClosedConnErr reports whether err is the "use of closed network connection"

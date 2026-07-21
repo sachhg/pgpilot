@@ -33,6 +33,7 @@ func run(args []string) error {
 	fs := flag.NewFlagSet("pgpilot", flag.ContinueOnError)
 	listen := fs.String("listen", "127.0.0.1:6432", "address to accept client connections on")
 	primary := fs.String("primary", "127.0.0.1:55432", "address of the upstream PostgreSQL primary")
+	logLevel := fs.String("log-level", "info", "log level: debug, info, warn, or error")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -45,7 +46,11 @@ func run(args []string) error {
 		return nil
 	}
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(*logLevel)); err != nil {
+		return fmt.Errorf("invalid -log-level %q: %w", *logLevel, err)
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	srv := proxy.New(proxy.Config{
 		ListenAddr:   *listen,
 		UpstreamAddr: *primary,
