@@ -36,6 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bytes and tracks each session's transaction status from ReadyForQuery
   (`I`/`T`/`E`). `cmd/pgpilot` gains a `-log-level` flag. Rationale recorded in
   `docs/adr/0003-message-aware-relay.md`.
+- Connection pool (Phase 4a): `internal/pool` is a bounded, health-checked pool
+  of backend connections — configurable max size, acquire timeout, idle timeout
+  with a background reaper, and per-connection health checks — that applies
+  backpressure (a bounded wait, or an immediate refusal once a waiter limit is
+  reached) instead of queueing acquirers without bound. It is the primitive the
+  session- and transaction-pooling layers will build on.
 
 ### Dependencies
 
