@@ -2,6 +2,9 @@ version: "2"
 
 run:
   timeout: 5m
+  # Lint integration-tagged code (e.g. the cluster smoke test) as well.
+  build-tags:
+    - integration
 
 linters:
   default: standard

@@ -1,0 +1,117 @@
+# pgpilot local development cluster: one primary and two streaming replicas
+# wired up with real physical replication. Brought up by `make up`.
+#
+# Host ports (high range, chosen to avoid clobbering a local Postgres on 5432):
+#   primary  -> 55432
+#   replica1 -> 55433
+#   replica2 -> 55434
+# The backends are internal to the proxy; these are exposed only for psql and
+# the smoke test's convenience.
+name: pgpilot-dev
+
+services:
+  primary:
+    image: postgres:16
+    container_name: pgpilot-primary
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pgpilot
+      POSTGRES_PASSWORD: pgpilot
+      POSTGRES_DB: pgpilot
+    command:
+      - postgres
+      - -c
+      - wal_level=replica
+      - -c
+      - max_wal_senders=10
+      - -c
+      - max_replication_slots=10
+      - -c
+      - hot_standby=on
+      - -c
+      - listen_addresses=*
+    volumes:
+      - primary-data:/var/lib/postgresql/data
+      - ./docker/primary/initdb:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pgpilot -d pgpilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    networks: [pgnet]
+
+  replica1:
+    image: postgres:16
+    container_name: pgpilot-replica1
+    restart: unless-stopped
+    depends_on:
+      primary:
+        condition: service_healthy
+    environment:
+      PRIMARY_HOST: primary
+      PRIMARY_PORT: "5432"
+      REPLICATION_USER: replicator
+      REPLICATION_SLOT: replica1_slot
+    entrypoint: ["/usr/local/bin/replica-entrypoint.sh"]
+    command:
+      - postgres
+      - -c
+      - hot_standby=on
+      - -c
+      - listen_addresses=*
+    volumes:
+      - replica1-data:/var/lib/postgresql/data
+      - ./docker/replica/entrypoint.sh:/usr/local/bin/replica-entrypoint.sh:ro
+    ports:
+      - "55433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pgpilot -d pgpilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+    networks: [pgnet]
+
+  replica2:
+    image: postgres:16
+    container_name: pgpilot-replica2
+    restart: unless-stopped
+    depends_on:
+      primary:
+        condition: service_healthy
+    environment:
+      PRIMARY_HOST: primary
+      PRIMARY_PORT: "5432"
+      REPLICATION_USER: replicator
+      REPLICATION_SLOT: replica2_slot
+    entrypoint: ["/usr/local/bin/replica-entrypoint.sh"]
+    command:
+      - postgres
+      - -c
+      - hot_standby=on
+      - -c
+      - listen_addresses=*
+    volumes:
+      - replica2-data:/var/lib/postgresql/data
+      - ./docker/replica/entrypoint.sh:/usr/local/bin/replica-entrypoint.sh:ro
+    ports:
+      - "55434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pgpilot -d pgpilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+    networks: [pgnet]
+
+volumes:
+  primary-data:
+  replica1-data:
+  replica2-data:
+
+networks:
+  pgnet:
+    driver: bridge
