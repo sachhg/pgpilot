@@ -21,3 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `make smoke` asserts that a row written to the primary is replayed and
   served by both replicas. Rationale recorded in
   `docs/adr/0001-dev-cluster-replication.md`.
+- Transparent proxy (Phase 2): `internal/proxy` accepts client connections,
+  refuses SSL/GSS negotiation with `N`, forwards the startup and authentication
+  exchange to the primary untouched, and pipes bytes bidirectionally with
+  graceful, leak-free shutdown. `cmd/pgpilot` now runs the proxy (`-listen`,
+  `-primary`). An integration test (`make itest`) asserts that psql through the
+  proxy behaves identically to psql direct. Rationale recorded in
+  `docs/adr/0002-transparent-proxy-ssl-refusal.md`.
