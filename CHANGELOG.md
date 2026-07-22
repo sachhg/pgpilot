@@ -29,21 +29,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proxy behaves identically to psql direct. Rationale recorded in
   `docs/adr/0002-transparent-proxy-ssl-refusal.md`.
 - Protocol codec (Phase 3): `internal/protocol` decodes the wire messages
-  pgpilot routes on (Query, Parse, Bind, Describe, Execute, Sync, Terminate,
-  ReadyForQuery, CommandComplete, ErrorResponse, RowDescription, DataRow) via
-  `jackc/pgx/v5/pgproto3`, with round-trip tests and a panic-safe, fuzzed
-  decoder. The proxy now relays messages frame-by-frame instead of as opaque
-  bytes and tracks each session's transaction status from ReadyForQuery
-  (`I`/`T`/`E`). `cmd/pgpilot` gains a `-log-level` flag. Rationale recorded in
+  pgpilot routes on via `jackc/pgx/v5/pgproto3`, with round-trip tests and a
+  panic-safe, fuzzed decoder. The proxy now relays messages frame-by-frame and
+  tracks each session's transaction status from ReadyForQuery. `cmd/pgpilot`
+  gains a `-log-level` flag. Rationale in
   `docs/adr/0003-message-aware-relay.md`.
 - Connection pool (Phase 4a): `internal/pool` is a bounded, health-checked pool
   of backend connections — configurable max size, acquire timeout, idle timeout
   with a background reaper, and per-connection health checks — that applies
-  backpressure (a bounded wait, or an immediate refusal once a waiter limit is
-  reached) instead of queueing acquirers without bound. It is the primitive the
-  session- and transaction-pooling layers will build on.
+  backpressure instead of queueing acquirers without bound.
+- SCRAM authentication and pooling foundation (Phase 4b): `internal/scram`
+  implements SCRAM-SHA-256 for both the client and server roles;
+  `internal/backend` opens and authenticates pgpilot's own connections to the
+  primary with SCRAM, resets them for reuse (`ROLLBACK`, then `DISCARD ALL`),
+  and manages one connection pool per `(user, database)`; `internal/config`
+  loads pgpilot's JSON configuration (backend, users, pool sizing). The SCRAM
+  client is validated against real PostgreSQL. Wiring the client-facing SCRAM
+  authenticator and session pooling into the proxy is the remaining half of this
+  phase. Rationale recorded in
+  `docs/adr/0004-auth-termination-and-pooling.md`.
 
 ### Dependencies
 
 - Added `github.com/jackc/pgx/v5` v5.7.1 (pinned to keep the module's `go 1.22`
   floor) for its `pgproto3` wire-protocol codec.
+- Promoted `golang.org/x/crypto` to a direct dependency for `pbkdf2`, used by
+  the SCRAM implementation.
