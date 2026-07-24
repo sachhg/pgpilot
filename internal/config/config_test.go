@@ -139,6 +139,35 @@ func TestLoad_Fencing(t *testing.T) {
 	}
 }
 
+func TestLoad_Routing(t *testing.T) {
+	path := writeConfig(t, `{
+		"listen": "x", "primary": "y",
+		"users": [{"name": "u", "password": "p"}],
+		"routing": {"policy": "scored"}
+	}`)
+	c, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Routing.Policy != "scored" {
+		t.Errorf("routing policy = %q, want scored", c.Routing.Policy)
+	}
+
+	def := writeConfig(t, `{"listen":"x","primary":"y","users":[{"name":"u","password":"p"}]}`)
+	dc, err := config.Load(def)
+	if err != nil {
+		t.Fatalf("Load default: %v", err)
+	}
+	if dc.Routing.Policy != "least-in-flight" {
+		t.Errorf("default routing policy = %q, want least-in-flight", dc.Routing.Policy)
+	}
+
+	bad := writeConfig(t, `{"listen":"x","primary":"y","users":[{"name":"u","password":"p"}],"routing":{"policy":"nope"}}`)
+	if _, err := config.Load(bad); err == nil {
+		t.Error("expected an error for an invalid routing policy")
+	}
+}
+
 func TestLoad_HealthDefaults(t *testing.T) {
 	path := writeConfig(t, `{"listen":"x","primary":"y","users":[{"name":"u","password":"p"}]}`)
 	c, err := config.Load(path)
