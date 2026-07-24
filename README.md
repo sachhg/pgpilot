@@ -46,34 +46,36 @@ The goal is to do one thing — correct, observable read/write routing — well.
 
 Early development, built in phases (see the roadmap). Not production-ready yet.
 Today pgpilot is an **authenticating connection pooler**: it verifies each
-client with SCRAM-SHA-256, hands it a pooled, SCRAM-authenticated connection to a
-single primary, and relays the session. Read/write routing across replicas and
-LSN fencing arrive in later phases.
+client with SCRAM-SHA-256 and hands it a pooled, SCRAM-authenticated connection
+to a single primary, in either session or transaction pooling mode. Read/write
+routing across replicas and LSN fencing arrive in later phases.
 
 ## Roadmap
 
-| Phase | Focus                                                        | Status      |
-| ----: | ------------------------------------------------------------ | ----------- |
-|     0 | Repo hygiene, CI, licensing                                  | done        |
-|     1 | Dev cluster: primary + 2 streaming replicas (docker-compose) | done        |
-|     2 | Transparent proxy (byte-level passthrough)                   | done        |
-|     3 | Protocol codec (typed frontend/backend messages)            | done        |
-|     4 | Connection pooling (session + transaction)                  | in progress |
-|     5 | Query classification (read vs. write via pg_query)          |             |
-|     6 | Replica registry, health polling, circuit breakers          |             |
-|     7 | LSN fencing                                                  |             |
-|     8 | Routing policy engine                                        |             |
-|     9 | Observability (Prometheus, structured logs, pprof)          |             |
-|    10 | Fault-injection harness                                      |             |
-|    11 | Benchmarks vs. direct connection and pgbouncer              |             |
-|    12 | Docs and the v0.1.0 release                                 |             |
+| Phase | Focus                                                        | Status |
+| ----: | ------------------------------------------------------------ | ------ |
+|     0 | Repo hygiene, CI, licensing                                  | done   |
+|     1 | Dev cluster: primary + 2 streaming replicas (docker-compose) | done   |
+|     2 | Transparent proxy (byte-level passthrough)                   | done   |
+|     3 | Protocol codec (typed frontend/backend messages)            | done   |
+|     4 | Connection pooling (session + transaction)                  | done   |
+|     5 | Query classification (read vs. write via pg_query)          | next   |
+|     6 | Replica registry, health polling, circuit breakers          |        |
+|     7 | LSN fencing                                                  |        |
+|     8 | Routing policy engine                                        |        |
+|     9 | Observability (Prometheus, structured logs, pprof)          |        |
+|    10 | Fault-injection harness                                      |        |
+|    11 | Benchmarks vs. direct connection and pgbouncer              |        |
+|    12 | Docs and the v0.1.0 release                                 |        |
 
 ## Technology
 
 - Go 1.22+, standard library first
 - [`jackc/pgx/v5/pgproto3`](https://github.com/jackc/pgx) — wire protocol codec
-- [`pganalyze/pg_query_go/v5`](https://github.com/pganalyze/pg_query_go) — real
-  Postgres parsing and query fingerprinting
+- [`pganalyze/pg_query_go`](https://github.com/pganalyze/pg_query_go) — the real
+  Postgres parser, for query feature detection and (later) classification. Uses
+  v6 rather than v5, which no longer builds on recent macOS SDKs; this makes the
+  build require a C compiler (cgo).
 - [`prometheus/client_golang`](https://github.com/prometheus/client_golang) —
   metrics
 
@@ -106,8 +108,7 @@ Postgres 16 primary and two streaming replicas.
 
 The primary is configured for physical streaming replication with a dedicated
 replication slot per standby. Each replica bootstraps by cloning the primary
-with `pg_basebackup` on its first start, then streams WAL to stay current. The
-seeded schema lives in `docker/primary/initdb/`. The design decisions are
+with `pg_basebackup`, then streams WAL to stay current. The design decisions are
 recorded in
 [`docs/adr/0001-dev-cluster-replication.md`](docs/adr/0001-dev-cluster-replication.md).
 
@@ -120,7 +121,7 @@ pgpilot reads a JSON config file (see [`pgpilot.example.json`](pgpilot.example.j
   "listen": "127.0.0.1:6432",
   "primary": "127.0.0.1:55432",
   "users": [{"name": "pgpilot", "password": "pgpilot"}],
-  "pool": {"max_size": 10, "max_waiters": 100, "acquire_timeout": "5s", "idle_timeout": "5m"}
+  "pool": {"mode": "session", "max_size": 10, "max_waiters": 100, "acquire_timeout": "5s", "idle_timeout": "5m"}
 }
 ```
 
@@ -136,16 +137,27 @@ psql "host=localhost port=6432 dbname=pgpilot user=pgpilot sslmode=prefer"
 
 pgpilot **verifies the client** with SCRAM-SHA-256 against the password in the
 config, then hands the session a pooled connection it opened to the primary
-(also with SCRAM). Connections are keyed by `(user, database)`, reset with
-`DISCARD ALL` between clients, and drawn from a bounded pool that applies
-backpressure. `make itest` asserts a session through pgpilot is byte-for-byte
-equivalent to a direct one.
-
-Because TLS is refused for now, clients must permit a cleartext connection to
-pgpilot; libpq's default `sslmode=prefer` falls back automatically, whereas
-`sslmode=require` fails until TLS termination lands. Cancel requests are not yet
-supported. The auth and pooling design is recorded in
+(also with SCRAM). Connections are keyed by `(user, database)` and drawn from a
+bounded pool that applies backpressure. Because TLS is refused for now, clients
+must permit a cleartext connection (libpq's default `sslmode=prefer` falls back
+automatically; `sslmode=require` fails until TLS termination lands). Cancel
+requests are not yet supported. See
 [`docs/adr/0004-auth-termination-and-pooling.md`](docs/adr/0004-auth-termination-and-pooling.md).
+
+### Pool modes
+
+`pool.mode` selects how long a client keeps a backend:
+
+- **`session`** (default) — a client holds one backend for its whole session;
+  the backend returns to the pool, reset with `DISCARD ALL`, when the client
+  disconnects.
+- **`transaction`** — a backend returns to the pool *between transactions*, so
+  idle clients do not tie one up. pgpilot uses `pg_query` to detect statements
+  that break transaction pooling — prepared statements, temporary tables,
+  `LISTEN`/`NOTIFY`, and session GUCs (`SET`, but not `SET LOCAL`) — and **pins**
+  such a session (and any session using the extended query protocol) to its
+  backend, so those features keep working. See
+  [`docs/adr/0005-transaction-pooling-and-feature-detection.md`](docs/adr/0005-transaction-pooling-and-feature-detection.md).
 
 ### Protocol awareness
 

@@ -35,24 +35,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of backend connections — configurable max size, acquire timeout, idle timeout
   with a background reaper, and per-connection health checks — that applies
   backpressure instead of queueing acquirers without bound.
-- SCRAM authentication and session pooling (Phase 4b): pgpilot now terminates
-  authentication and pools backend connections.
-  - `internal/scram` implements SCRAM-SHA-256 for both the client and server
-    roles; `internal/backend` opens and authenticates connections to the primary
-    with SCRAM, resets them for reuse (`ROLLBACK`, then `DISCARD ALL`), and
-    manages one pool per `(user, database)`; `internal/config` loads pgpilot's
-    JSON configuration.
-  - The proxy authenticates each client with SCRAM-SHA-256, acquires a pooled
-    backend for the client's `(user, database)`, replays the backend's startup
-    parameters, relays the session while tracking transaction status, intercepts
-    the client's Terminate, and resets and returns the backend to the pool on a
-    clean disconnect (discarding it otherwise).
-  - `cmd/pgpilot` now runs from a `-config <file>` (replacing `-primary`); see
-    `pgpilot.example.json`.
-  - SCRAM is validated against real PostgreSQL (backend) and real psql
-    (client); `make itest` asserts psql through pgpilot matches psql direct.
-    Transaction pooling and feature detection follow in Phase 4c. Rationale in
-    `docs/adr/0004-auth-termination-and-pooling.md`.
+- SCRAM authentication and session pooling (Phase 4b): `internal/scram`
+  implements SCRAM-SHA-256 for both roles; `internal/backend` opens and
+  authenticates connections to the primary with SCRAM, resets them for reuse,
+  and manages one pool per `(user, database)`; `internal/config` loads pgpilot's
+  JSON configuration. The proxy authenticates each client with SCRAM-SHA-256,
+  acquires a pooled backend, replays startup parameters, and relays the session,
+  resetting and reusing the backend on a clean disconnect. `cmd/pgpilot` runs
+  from a `-config <file>`. Validated against real PostgreSQL and psql. Rationale
+  in `docs/adr/0004-auth-termination-and-pooling.md`.
+- Transaction pooling and feature detection (Phase 4c): a `pool.mode`
+  configuration selects `session` or `transaction` pooling. In transaction mode
+  a backend is returned to the pool between transactions (cleared with `DISCARD
+  ALL`). `internal/detect` uses `pg_query` (the real PostgreSQL parser, never
+  string matching) to flag statements that break transaction pooling — prepared
+  statements, temporary tables, `LISTEN`/`NOTIFY`, and session GUCs — and pins
+  such a session, and any extended-query-protocol session, to its backend so
+  those features keep working. `make itest` validates both modes against real
+  psql, including pinning and multiplexing. Rationale in
+  `docs/adr/0005-transaction-pooling-and-feature-detection.md`.
 
 ### Dependencies
 
@@ -60,3 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   floor) for its `pgproto3` wire-protocol codec.
 - Promoted `golang.org/x/crypto` to a direct dependency for `pbkdf2`, used by
   the SCRAM implementation.
+- Added `github.com/pganalyze/pg_query_go/v6` v6.2.2 for query feature
+  detection. This uses **v6 rather than the v5** BUILD.md names because v5's last
+  release fails to compile against recent macOS SDKs; v6 fixes the build and
+  keeps the `go 1.22` floor. pg_query is cgo, so the build now needs a C
+  compiler.
