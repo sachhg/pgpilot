@@ -21,6 +21,7 @@ import (
 	"github.com/sachhg/pgpilot/internal/detect"
 	"github.com/sachhg/pgpilot/internal/protocol"
 	"github.com/sachhg/pgpilot/internal/registry"
+	"github.com/sachhg/pgpilot/internal/router"
 	"github.com/sachhg/pgpilot/internal/scram"
 )
 
@@ -40,6 +41,7 @@ type session struct {
 	cfg      *config.Config
 	manager  *backend.Manager
 	registry *registry.Registry
+	policy   router.Policy
 	log      *slog.Logger
 	tracker  *protocol.TxTracker
 }
@@ -428,14 +430,34 @@ func (s *session) serveRouting(ctx context.Context, user, database string) error
 			_, breaks = detect.BreaksTxPooling(sql)
 		}
 
+		// A read that the policy places on a replica owes exactly one Release,
+		// paired with this Choose, so its in-flight count and latency estimate
+		// stay accurate. routedAddr is empty for writes, in-transaction reads,
+		// and reads that fall back to the primary (no Choose happened).
+		var (
+			routedAddr string
+			routedFP   string
+			readStart  time.Time
+		)
+
 		// Choose the target backend when starting a new transaction.
 		if held == nil {
 			target := primary
 			if class == classify.Read {
-				target = s.chooseReadTarget(fence)
+				fp := ""
+				if s.policy.NeedsFingerprint() {
+					fp = classify.Fingerprint(sql)
+				}
+				var routed bool
+				if target, routed = s.chooseReadTarget(fence, fp); routed {
+					routedAddr, routedFP = target, fp
+				}
 			}
 			held, err = s.manager.AcquireAt(ctx, user, database, target)
 			if err != nil {
+				if routedAddr != "" {
+					s.policy.Release(routedAddr, routedFP, 0)
+				}
 				return s.reject("53300", "could not acquire a backend connection")
 			}
 			heldAddr = target
@@ -444,12 +466,22 @@ func (s *session) serveRouting(ctx context.Context, user, database string) error
 			wroteThisTx = true
 		}
 
+		if routedAddr != "" {
+			readStart = time.Now()
+		}
 		if _, err := held.NetConn().Write(full); err != nil {
+			if routedAddr != "" {
+				s.policy.Release(routedAddr, routedFP, time.Since(readStart))
+			}
 			s.manager.DiscardAt(user, database, heldAddr, held)
 			held = nil
 			return nil
 		}
 		status, err := relayResponse(s.client, held.NetConn())
+		if routedAddr != "" {
+			// The read has run to ReadyForQuery; release it whatever the outcome.
+			s.policy.Release(routedAddr, routedFP, time.Since(readStart))
+		}
 		if err != nil {
 			s.manager.DiscardAt(user, database, heldAddr, held)
 			held = nil
@@ -480,15 +512,26 @@ func (s *session) serveRouting(ctx context.Context, user, database string) error
 	}
 }
 
-// chooseReadTarget returns the address of a replica eligible to serve a read
-// under the current fence and fencing mode, or the primary if none qualifies.
-func (s *session) chooseReadTarget(fence uint64) string {
+// chooseReadTarget picks a backend to serve a read under the current fence and
+// fencing mode. It collects the replicas eligible to serve the read and lets the
+// routing policy choose among them; routed reports whether the policy was
+// consulted (true) or the read fell back to the primary because no replica
+// qualified (false), so the caller knows whether it owes the policy a Release.
+func (s *session) chooseReadTarget(fence uint64, fingerprint string) (addr string, routed bool) {
+	var candidates []router.Candidate
 	for _, st := range s.registry.Snapshot() {
 		if st.Role == registry.RoleReplica && st.Healthy && s.replicaEligible(st, fence) {
-			return st.Addr
+			candidates = append(candidates, router.Candidate{
+				Addr:       st.Addr,
+				LagBytes:   st.LagBytes,
+				LagSeconds: st.LagSeconds,
+			})
 		}
 	}
-	return s.cfg.Primary
+	if len(candidates) == 0 {
+		return s.cfg.Primary, false
+	}
+	return s.policy.Choose(candidates, fingerprint), true
 }
 
 func (s *session) replicaEligible(st registry.Status, fence uint64) bool {

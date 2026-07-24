@@ -14,14 +14,15 @@ import (
 	"github.com/sachhg/pgpilot/internal/config"
 	"github.com/sachhg/pgpilot/internal/proxy"
 	"github.com/sachhg/pgpilot/internal/registry"
+	"github.com/sachhg/pgpilot/internal/router"
 )
 
 var replicaHostPorts = []string{"127.0.0.1:55433", "127.0.0.1:55434"}
 
 // startRoutingProxy launches an in-process routing proxy (primary + 2 replicas)
 // in the given fencing mode and returns its port once the registry has polled
-// every backend healthy.
-func startRoutingProxy(t *testing.T, mode string) int {
+// every backend healthy. A nil policy leaves the proxy to resolve its default.
+func startRoutingProxy(t *testing.T, mode string, policy router.Policy) int {
 	t.Helper()
 	cfg := &config.Config{
 		Primary:  primaryHostPort,
@@ -52,7 +53,7 @@ func startRoutingProxy(t *testing.T, mode string) int {
 		{Name: "replica2", Addr: replicaHostPorts[1]},
 	})
 
-	srv := proxy.New(proxy.Config{ListenAddr: "0.0.0.0:0", Users: cfg, Manager: mgr, Registry: reg, Logger: log})
+	srv := proxy.New(proxy.Config{ListenAddr: "0.0.0.0:0", Users: cfg, Manager: mgr, Registry: reg, Policy: policy, Logger: log})
 	addr, err := srv.Listen()
 	if err != nil {
 		t.Fatalf("proxy listen: %v", err)
@@ -106,7 +107,7 @@ func resumeReplication(t *testing.T, compose string) {
 func TestProxy_RoutesReadsToReplicas(t *testing.T) {
 	compose := requireCluster(t)
 	resumeReplication(t, compose)
-	port := startRoutingProxy(t, config.FenceStrict)
+	port := startRoutingProxy(t, config.FenceStrict, nil)
 
 	// A read with no write fence is served by a replica.
 	if got, err := runPsql(compose, "host.docker.internal", port, "SELECT pg_is_in_recovery()"); err != nil {
@@ -148,7 +149,7 @@ func TestProxy_LSNFencing_StrictNeverStale(t *testing.T) {
 
 	// Strict: write 'new' (fence advances on the primary) then read — the frozen
 	// replicas are behind the fence, so the read falls back to the primary.
-	strict := startRoutingProxy(t, config.FenceStrict)
+	strict := startRoutingProxy(t, config.FenceStrict, nil)
 	got, err := runPsqlSession(compose, "host.docker.internal", strict,
 		"UPDATE fence_test SET v = 'new' WHERE id = 1",
 		"SELECT v FROM fence_test WHERE id = 1")
@@ -160,7 +161,7 @@ func TestProxy_LSNFencing_StrictNeverStale(t *testing.T) {
 	}
 
 	// Relaxed: the same read is served by a frozen replica and is stale.
-	relaxed := startRoutingProxy(t, config.FenceRelaxed)
+	relaxed := startRoutingProxy(t, config.FenceRelaxed, nil)
 	rgot, err := runPsql(compose, "host.docker.internal", relaxed, "SELECT v FROM fence_test WHERE id = 1")
 	if err != nil {
 		t.Fatalf("relaxed session: %v", err)

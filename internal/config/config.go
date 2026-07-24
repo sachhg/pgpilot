@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"os"
 	"time"
+
+	"github.com/sachhg/pgpilot/internal/router"
 )
 
 // Config is the top-level pgpilot configuration.
@@ -21,6 +23,17 @@ type Config struct {
 	Pool     Pool     `json:"pool"`
 	Health   Health   `json:"health"`
 	Fencing  Fencing  `json:"fencing"`
+	Routing  Routing  `json:"routing"`
+}
+
+// Routing configures how reads are balanced across the replicas eligible to
+// serve them (those healthy and fresh enough under the fencing rules).
+type Routing struct {
+	// Policy is "round-robin" (even rotation), "least-in-flight" (fewest
+	// outstanding reads wins), or "scored" (rank by estimated completion time,
+	// learning per-query-shape latency). "scored" costs one pg_query fingerprint
+	// per read, so "least-in-flight" is the default.
+	Policy string `json:"policy"`
 }
 
 // Fencing-mode values.
@@ -157,6 +170,9 @@ func (c *Config) applyDefaults() {
 	if c.Fencing.BoundedMs == 0 {
 		c.Fencing.BoundedMs = 100
 	}
+	if c.Routing.Policy == "" {
+		c.Routing.Policy = router.PolicyLeastInFlight
+	}
 }
 
 func (c *Config) validate() error {
@@ -190,6 +206,12 @@ func (c *Config) validate() error {
 	default:
 		return fmt.Errorf("config: fencing.mode must be %q, %q, or %q, got %q",
 			FenceStrict, FenceBounded, FenceRelaxed, c.Fencing.Mode)
+	}
+	switch c.Routing.Policy {
+	case router.PolicyRoundRobin, router.PolicyLeastInFlight, router.PolicyScored:
+	default:
+		return fmt.Errorf("config: routing.policy must be %q, %q, or %q, got %q",
+			router.PolicyRoundRobin, router.PolicyLeastInFlight, router.PolicyScored, c.Routing.Policy)
 	}
 	return nil
 }

@@ -42,8 +42,9 @@ The goal is to do one thing — correct, observable read/write routing — well.
 Early development, built in phases (see the roadmap). Not production-ready yet.
 pgpilot now **routes**: it authenticates each client with SCRAM-SHA-256, pools
 connections, classifies each query, and sends writes to the primary and reads to
-a replica — enforcing read-your-writes with a per-session LSN fence. A routing
-*policy* (scoring replicas by lag and load) and observability come next.
+a replica — enforcing read-your-writes with a per-session LSN fence — and
+balances reads across eligible replicas with a selectable routing policy
+(round-robin, least-in-flight, or latency-scored). Observability comes next.
 
 ## Roadmap
 
@@ -57,8 +58,8 @@ a replica — enforcing read-your-writes with a per-session LSN fence. A routing
 |     5 | Query classification (read vs. write via pg_query)          | done   |
 |     6 | Replica registry, health polling, circuit breakers          | done   |
 |     7 | LSN fencing                                                  | done   |
-|     8 | Routing policy engine                                        | next   |
-|     9 | Observability (Prometheus, structured logs, pprof)          |        |
+|     8 | Routing policy engine                                        | done   |
+|     9 | Observability (Prometheus, structured logs, pprof)          | next   |
 |    10 | Fault-injection harness                                      |        |
 |    11 | Benchmarks vs. direct connection and pgbouncer              |        |
 |    12 | Docs and the v0.1.0 release                                 |        |
@@ -106,7 +107,8 @@ pgpilot reads a JSON config file (see [`pgpilot.example.json`](pgpilot.example.j
   "users": [{"name": "pgpilot", "password": "pgpilot"}],
   "pool": {"mode": "session", "max_size": 10, "acquire_timeout": "5s", "idle_timeout": "5m"},
   "health": {"interval": "1s", "failure_threshold": 3, "base_backoff": "1s", "max_backoff": "30s"},
-  "fencing": {"mode": "strict", "bounded_ms": 100}
+  "fencing": {"mode": "strict", "bounded_ms": 100},
+  "routing": {"policy": "least-in-flight"}
 }
 ```
 
@@ -141,6 +143,25 @@ primary). `fencing.mode` selects the trade-off:
 `pg_wal_replay_pause()` and asserts a write followed by a read never observes a
 stale value under strict mode. Design in
 [`docs/adr/0008-lsn-fencing.md`](docs/adr/0008-lsn-fencing.md).
+
+### Routing policies
+
+Fencing decides which replicas *may* serve a read; `routing.policy` decides which
+one *does* when more than one qualifies:
+
+- **`round-robin`** — even rotation across eligible replicas.
+- **`least-in-flight`** (default) — the eligible replica with the fewest reads
+  outstanding, so a slow or overloaded replica sheds load until it drains.
+- **`scored`** — ranks replicas by estimated completion time,
+  `(inFlight + 1) * ewmaLatency(addr, shape) + lagPenalty * lag`, learning each
+  query shape's cost per replica (keyed by pg_query fingerprint) so it steers
+  expensive shapes away from busy replicas. It costs one fingerprint parse per
+  read, which is why it is opt-in.
+
+`go test -run WorkloadComparison -v ./internal/router` runs a deterministic
+simulation comparing the policies on a synthetic mixed workload with no database.
+Design in
+[`docs/adr/0009-routing-policy-engine.md`](docs/adr/0009-routing-policy-engine.md).
 
 ### Health and replication lag
 

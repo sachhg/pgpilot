@@ -21,5 +21,8 @@
   "fencing": {
     "mode": "strict",
     "bounded_ms": 100
+  },
+  "routing": {
+    "policy": "least-in-flight"
   }
 }
