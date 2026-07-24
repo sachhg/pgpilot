@@ -193,6 +193,34 @@ func lastLine(s string) string {
 	return s
 }
 
+// waitFor polls cond until it is true or the deadline passes.
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("condition not met within deadline")
+}
+
+// runPsqlOn runs a query on a specific cluster container's own Postgres (used to
+// pause replication on a replica or seed the primary directly).
+func runPsqlOn(compose, service, sql string) (string, error) {
+	cmd := exec.Command("docker", "compose", "-f", compose, "exec", "-T",
+		"-e", "PGPASSWORD="+pgPass, service,
+		"psql", "-h", "127.0.0.1", "-p", "5432", "-U", pgUser, "-d", pgDB, "-tAX", "-c", sql)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
 // composeFile locates docker-compose.yml by walking up from the working directory.
 func composeFile(t *testing.T) string {
 	t.Helper()

@@ -77,6 +77,7 @@ type Status struct {
 	Addr       string
 	Role       Role
 	Healthy    bool
+	LSN        uint64 // replayed WAL position (replica) or current (primary)
 	LagBytes   int64
 	LagSeconds float64
 	LastErr    string
@@ -297,6 +298,7 @@ func (r *Registry) Snapshot() []Status {
 			Addr:       st.addr,
 			Role:       st.role,
 			Healthy:    st.healthy,
+			LSN:        st.lsn,
 			LagSeconds: st.lagSeconds,
 			LastErr:    st.lastErr,
 			LastPoll:   st.lastPoll,
@@ -318,7 +320,7 @@ func parseHealthRow(row []string) (Role, uint64, float64, error) {
 	if row[0] == "t" {
 		role = RoleReplica
 	}
-	lsn, err := parseLSN(row[1])
+	lsn, err := ParseLSN(row[1])
 	if err != nil {
 		return RoleUnknown, 0, 0, err
 	}
@@ -329,8 +331,8 @@ func parseHealthRow(row []string) (Role, uint64, float64, error) {
 	return role, lsn, lagSeconds, nil
 }
 
-// parseLSN parses a pg_lsn ("hi/lo", both hex) into a 64-bit byte position.
-func parseLSN(s string) (uint64, error) {
+// ParseLSN parses a pg_lsn ("hi/lo", both hex) into a 64-bit byte position.
+func ParseLSN(s string) (uint64, error) {
 	hi, lo, ok := strings.Cut(s, "/")
 	if !ok {
 		return 0, fmt.Errorf("registry: bad LSN %q", s)

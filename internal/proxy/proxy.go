@@ -17,16 +17,21 @@ import (
 	"github.com/sachhg/pgpilot/internal/backend"
 	"github.com/sachhg/pgpilot/internal/config"
 	"github.com/sachhg/pgpilot/internal/protocol"
+	"github.com/sachhg/pgpilot/internal/registry"
 )
 
 // Config configures a proxy Server.
 type Config struct {
 	// ListenAddr is the TCP address the proxy accepts client connections on.
 	ListenAddr string
-	// Users holds the credentials pgpilot verifies clients against.
+	// Users holds the credentials pgpilot verifies clients against, and the
+	// primary/replica/fencing settings the router reads.
 	Users *config.Config
 	// Manager supplies pooled, authenticated backend connections.
 	Manager *backend.Manager
+	// Registry reports backend health and lag for read routing. Nil disables
+	// routing (every session is served by the primary).
+	Registry *registry.Registry
 	// Logger receives structured logs. Nil selects slog.Default.
 	Logger *slog.Logger
 }
@@ -119,11 +124,12 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 	log.Info("session opened")
 
 	sess := &session{
-		client:  client,
-		cfg:     s.cfg.Users,
-		manager: s.cfg.Manager,
-		log:     log,
-		tracker: &protocol.TxTracker{},
+		client:   client,
+		cfg:      s.cfg.Users,
+		manager:  s.cfg.Manager,
+		registry: s.cfg.Registry,
+		log:      log,
+		tracker:  &protocol.TxTracker{},
 	}
 	if err := sess.serve(ctx); err != nil {
 		log.Warn("session closed", "error", err)

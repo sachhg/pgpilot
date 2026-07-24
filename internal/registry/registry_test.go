@@ -172,13 +172,13 @@ func TestParseLSN(t *testing.T) {
 		{"0/", 0, false},
 	}
 	for _, c := range cases {
-		got, err := parseLSN(c.in)
+		got, err := ParseLSN(c.in)
 		if c.ok {
 			if err != nil || got != c.want {
-				t.Errorf("parseLSN(%q) = %#x, %v; want %#x", c.in, got, err, c.want)
+				t.Errorf("ParseLSN(%q) = %#x, %v; want %#x", c.in, got, err, c.want)
 			}
 		} else if err == nil {
-			t.Errorf("parseLSN(%q) = %#x, nil; want error", c.in, got)
+			t.Errorf("ParseLSN(%q) = %#x, nil; want error", c.in, got)
 		}
 	}
 }

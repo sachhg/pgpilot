@@ -20,6 +20,25 @@ type Config struct {
 	Users    []User   `json:"users"`
 	Pool     Pool     `json:"pool"`
 	Health   Health   `json:"health"`
+	Fencing  Fencing  `json:"fencing"`
+}
+
+// Fencing-mode values.
+const (
+	FenceStrict  = "strict"
+	FenceBounded = "bounded"
+	FenceRelaxed = "relaxed"
+)
+
+// Fencing configures LSN fencing, which decides when a read may be served by a
+// replica.
+type Fencing struct {
+	// Mode is "strict" (a replica may serve a read only once it has replayed the
+	// session's write fence), "bounded" (a replica within BoundedMs of staleness
+	// may serve the read), or "relaxed" (any healthy replica may).
+	Mode string `json:"mode"`
+	// BoundedMs is the staleness bound, in milliseconds, for bounded mode.
+	BoundedMs int `json:"bounded_ms"`
 }
 
 // Health configures the background poller that tracks each backend's recovery
@@ -132,6 +151,12 @@ func (c *Config) applyDefaults() {
 	if c.Health.MaxBackoff == 0 {
 		c.Health.MaxBackoff = Duration(30 * time.Second)
 	}
+	if c.Fencing.Mode == "" {
+		c.Fencing.Mode = FenceStrict
+	}
+	if c.Fencing.BoundedMs == 0 {
+		c.Fencing.BoundedMs = 100
+	}
 }
 
 func (c *Config) validate() error {
@@ -159,6 +184,12 @@ func (c *Config) validate() error {
 	}
 	if c.Pool.Mode != ModeSession && c.Pool.Mode != ModeTransaction {
 		return fmt.Errorf("config: pool.mode must be %q or %q, got %q", ModeSession, ModeTransaction, c.Pool.Mode)
+	}
+	switch c.Fencing.Mode {
+	case FenceStrict, FenceBounded, FenceRelaxed:
+	default:
+		return fmt.Errorf("config: fencing.mode must be %q, %q, or %q, got %q",
+			FenceStrict, FenceBounded, FenceRelaxed, c.Fencing.Mode)
 	}
 	return nil
 }
