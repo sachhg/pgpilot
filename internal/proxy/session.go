@@ -16,9 +16,11 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 
 	"github.com/sachhg/pgpilot/internal/backend"
+	"github.com/sachhg/pgpilot/internal/classify"
 	"github.com/sachhg/pgpilot/internal/config"
 	"github.com/sachhg/pgpilot/internal/detect"
 	"github.com/sachhg/pgpilot/internal/protocol"
+	"github.com/sachhg/pgpilot/internal/registry"
 	"github.com/sachhg/pgpilot/internal/scram"
 )
 
@@ -34,11 +36,12 @@ const (
 // (user, database), and relays protocol messages between them, returning the
 // backend to the pool when the client disconnects cleanly.
 type session struct {
-	client  net.Conn
-	cfg     *config.Config
-	manager *backend.Manager
-	log     *slog.Logger
-	tracker *protocol.TxTracker
+	client   net.Conn
+	cfg      *config.Config
+	manager  *backend.Manager
+	registry *registry.Registry
+	log      *slog.Logger
+	tracker  *protocol.TxTracker
 }
 
 // serve runs the session to completion.
@@ -87,6 +90,12 @@ func (s *session) serve(ctx context.Context) error {
 		return fmt.Errorf("complete startup: %w", err)
 	}
 
+	if s.routing() {
+		// Routing mode: return the startup connection to the pool and route each
+		// query to the primary or an eligible replica.
+		s.manager.Release(user, database, be)
+		return s.serveRouting(ctx, user, database)
+	}
 	if s.cfg.Pool.Mode == config.ModeTransaction {
 		return s.serveTransaction(ctx, user, database, be)
 	}
@@ -340,6 +349,187 @@ func (s *session) releaseBetweenTransactions(user, database string, be *backend.
 		return
 	}
 	s.manager.Release(user, database, be)
+}
+
+// routing reports whether pgpilot routes reads to replicas. It does so when
+// replicas are configured and the health registry is available.
+func (s *session) routing() bool {
+	return s.registry != nil && len(s.cfg.Replicas) > 0
+}
+
+// serveRouting relays in routing mode: each simple query outside a transaction
+// is classified and sent to the primary (writes) or an eligible replica (reads),
+// while an explicit transaction is pinned to one backend. After a write commits
+// on the primary, the session's LSN fence advances, and a subsequent read only
+// goes to a replica that has replayed at or past that fence. A query that leaves
+// session state (a session GUC, a temp table, a prepared statement, LISTEN) or
+// the extended query protocol pins the session to its backend for the rest of
+// its life.
+func (s *session) serveRouting(ctx context.Context, user, database string) error {
+	primary := s.cfg.Primary
+	var held *backend.Conn
+	heldAddr := ""
+	wroteThisTx := false
+	var fence uint64
+
+	watchDone := make(chan struct{})
+	var watcher sync.WaitGroup
+	watcher.Add(1)
+	go func() {
+		defer watcher.Done()
+		select {
+		case <-ctx.Done():
+			_ = s.client.Close()
+		case <-watchDone:
+		}
+	}()
+	defer func() {
+		close(watchDone)
+		watcher.Wait()
+		if held != nil {
+			s.manager.DiscardAt(user, database, heldAddr, held)
+		}
+	}()
+
+	for {
+		msgType, full, err := readMessage(s.client)
+		if err != nil {
+			return nil
+		}
+		if msgType == protocol.MsgTerminate {
+			return nil
+		}
+
+		if msgType != protocol.MsgQuery {
+			// The extended query protocol spans several messages before a
+			// response; pin to the primary and hand off to the continuous relay.
+			if held == nil {
+				held, err = s.manager.AcquireAt(ctx, user, database, primary)
+				if err != nil {
+					return s.reject("53300", "could not acquire a backend connection")
+				}
+				heldAddr = primary
+			}
+			if _, err := held.NetConn().Write(full); err != nil {
+				s.manager.DiscardAt(user, database, heldAddr, held)
+				held = nil
+				return nil
+			}
+			clean := s.relayPooled(ctx, held)
+			s.finishBackendAt(user, database, heldAddr, held, clean)
+			held = nil
+			return nil
+		}
+
+		sql := queryString(full)
+		class := classify.Classify(sql)
+		breaks := false
+		if class == classify.Write {
+			_, breaks = detect.BreaksTxPooling(sql)
+		}
+
+		// Choose the target backend when starting a new transaction.
+		if held == nil {
+			target := primary
+			if class == classify.Read {
+				target = s.chooseReadTarget(fence)
+			}
+			held, err = s.manager.AcquireAt(ctx, user, database, target)
+			if err != nil {
+				return s.reject("53300", "could not acquire a backend connection")
+			}
+			heldAddr = target
+		}
+		if class == classify.Write && heldAddr == primary {
+			wroteThisTx = true
+		}
+
+		if _, err := held.NetConn().Write(full); err != nil {
+			s.manager.DiscardAt(user, database, heldAddr, held)
+			held = nil
+			return nil
+		}
+		status, err := relayResponse(s.client, held.NetConn())
+		if err != nil {
+			s.manager.DiscardAt(user, database, heldAddr, held)
+			held = nil
+			return nil
+		}
+
+		if breaks {
+			s.log.Debug("pinning session to its backend", "backend", heldAddr)
+			clean := s.relayPooled(ctx, held)
+			s.finishBackendAt(user, database, heldAddr, held, clean)
+			held = nil
+			return nil
+		}
+		if status != protocol.StatusIdle {
+			continue // still in a transaction: keep the backend pinned
+		}
+		if heldAddr == primary && wroteThisTx {
+			if lsn, lerr := s.primaryLSN(ctx, held); lerr == nil && lsn > fence {
+				fence = lsn
+				s.log.Debug("advanced write fence", "lsn", lsn)
+			}
+		}
+		wroteThisTx = false
+		// A released connection here never ran a session-state statement (those
+		// pin above), so it is clean and needs no reset.
+		s.manager.ReleaseAt(user, database, heldAddr, held)
+		held = nil
+	}
+}
+
+// chooseReadTarget returns the address of a replica eligible to serve a read
+// under the current fence and fencing mode, or the primary if none qualifies.
+func (s *session) chooseReadTarget(fence uint64) string {
+	for _, st := range s.registry.Snapshot() {
+		if st.Role == registry.RoleReplica && st.Healthy && s.replicaEligible(st, fence) {
+			return st.Addr
+		}
+	}
+	return s.cfg.Primary
+}
+
+func (s *session) replicaEligible(st registry.Status, fence uint64) bool {
+	switch s.cfg.Fencing.Mode {
+	case config.FenceRelaxed:
+		return true
+	case config.FenceBounded:
+		return st.LagSeconds*1000 <= float64(s.cfg.Fencing.BoundedMs)
+	default: // strict
+		return st.LSN >= fence
+	}
+}
+
+// primaryLSN reads the primary's current WAL position to advance the fence.
+func (s *session) primaryLSN(ctx context.Context, conn *backend.Conn) (uint64, error) {
+	cctx, cancel := context.WithTimeout(ctx, resetTimeout)
+	defer cancel()
+	row, err := conn.QueryRow(cctx, "SELECT pg_current_wal_lsn()")
+	if err != nil {
+		return 0, err
+	}
+	if len(row) < 1 {
+		return 0, fmt.Errorf("proxy: empty pg_current_wal_lsn result")
+	}
+	return registry.ParseLSN(row[0])
+}
+
+// finishBackendAt returns a connection to a specific backend's pool when the
+// session ended cleanly, resetting it first; otherwise it discards it.
+func (s *session) finishBackendAt(user, database, addr string, be *backend.Conn, clean bool) {
+	if !clean {
+		s.manager.DiscardAt(user, database, addr, be)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), resetTimeout)
+	defer cancel()
+	if err := be.Reset(ctx); err != nil {
+		s.manager.DiscardAt(user, database, addr, be)
+		return
+	}
+	s.manager.ReleaseAt(user, database, addr, be)
 }
 
 // trackBackend updates the session's transaction status from ReadyForQuery.
