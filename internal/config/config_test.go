@@ -113,6 +113,32 @@ func TestLoad_ReplicasAndHealth(t *testing.T) {
 	}
 }
 
+func TestLoad_Fencing(t *testing.T) {
+	path := writeConfig(t, `{
+		"listen": "x", "primary": "y",
+		"users": [{"name": "u", "password": "p"}],
+		"fencing": {"mode": "bounded", "bounded_ms": 250}
+	}`)
+	c, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Fencing.Mode != config.FenceBounded || c.Fencing.BoundedMs != 250 {
+		t.Errorf("fencing = %+v", c.Fencing)
+	}
+
+	def := writeConfig(t, `{"listen":"x","primary":"y","users":[{"name":"u","password":"p"}]}`)
+	dc, _ := config.Load(def)
+	if dc.Fencing.Mode != config.FenceStrict {
+		t.Errorf("default fencing mode = %q, want strict", dc.Fencing.Mode)
+	}
+
+	bad := writeConfig(t, `{"listen":"x","primary":"y","users":[{"name":"u","password":"p"}],"fencing":{"mode":"nope"}}`)
+	if _, err := config.Load(bad); err == nil {
+		t.Error("expected an error for an invalid fencing mode")
+	}
+}
+
 func TestLoad_HealthDefaults(t *testing.T) {
 	path := writeConfig(t, `{"listen":"x","primary":"y","users":[{"name":"u","password":"p"}]}`)
 	c, err := config.Load(path)
