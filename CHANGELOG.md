@@ -31,29 +31,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tracks each session's transaction status from ReadyForQuery. `cmd/pgpilot`
   gains a `-log-level` flag. Rationale in
   `docs/adr/0003-message-aware-relay.md`.
-- Connection pool (Phase 4a): `internal/pool` is a bounded, health-checked pool
-  of backend connections — configurable max size, acquire timeout, idle timeout
-  with a background reaper, and per-connection health checks — that applies
-  backpressure instead of queueing acquirers without bound.
-- SCRAM authentication and session pooling (Phase 4b): `internal/scram`
-  implements SCRAM-SHA-256 for both roles; `internal/backend` opens and
-  authenticates connections to the primary with SCRAM, resets them for reuse,
-  and manages one pool per `(user, database)`; `internal/config` loads pgpilot's
-  JSON configuration. The proxy authenticates each client with SCRAM-SHA-256,
-  acquires a pooled backend, replays startup parameters, and relays the session,
-  resetting and reusing the backend on a clean disconnect. `cmd/pgpilot` runs
-  from a `-config <file>`. Validated against real PostgreSQL and psql. Rationale
-  in `docs/adr/0004-auth-termination-and-pooling.md`.
-- Transaction pooling and feature detection (Phase 4c): a `pool.mode`
-  configuration selects `session` or `transaction` pooling. In transaction mode
-  a backend is returned to the pool between transactions (cleared with `DISCARD
-  ALL`). `internal/detect` uses `pg_query` (the real PostgreSQL parser, never
-  string matching) to flag statements that break transaction pooling — prepared
-  statements, temporary tables, `LISTEN`/`NOTIFY`, and session GUCs — and pins
-  such a session, and any extended-query-protocol session, to its backend so
-  those features keep working. `make itest` validates both modes against real
-  psql, including pinning and multiplexing. Rationale in
-  `docs/adr/0005-transaction-pooling-and-feature-detection.md`.
+- Connection pooling (Phase 4): a bounded, health-checked pool (`internal/pool`)
+  with backpressure; SCRAM-SHA-256 authentication on both sides
+  (`internal/scram`, `internal/backend`), per-`(user, database)` pools, and a
+  JSON config (`internal/config`); and session or transaction pooling selected
+  by `pool.mode`, with `pg_query`-based detection (`internal/detect`) that pins
+  a session using a feature transaction pooling would break. Validated against
+  real PostgreSQL and psql in both modes. Rationale in ADRs 0004 and 0005.
+- Query classification (Phase 5): `internal/classify` decides whether a query
+  may be served by a replica (read) or must go to the primary (write), using
+  `pg_query` rather than string matching. It handles the cases that trip up
+  naive routers — row-locking `SELECT`s, data-modifying CTEs, volatile
+  functions, `EXPLAIN ANALYZE`, multi-statement queries, and explicit
+  transaction blocks (pinned to the primary) — and defaults to the primary for
+  anything it cannot prove is a safe read. Table-driven tests cover every case.
+  This is the engine the routing phase will consume. Rationale in
+  `docs/adr/0006-query-classification.md`.
 
 ### Dependencies
 
@@ -61,8 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   floor) for its `pgproto3` wire-protocol codec.
 - Promoted `golang.org/x/crypto` to a direct dependency for `pbkdf2`, used by
   the SCRAM implementation.
-- Added `github.com/pganalyze/pg_query_go/v6` v6.2.2 for query feature
-  detection. This uses **v6 rather than the v5** BUILD.md names because v5's last
-  release fails to compile against recent macOS SDKs; v6 fixes the build and
-  keeps the `go 1.22` floor. pg_query is cgo, so the build now needs a C
-  compiler.
+- Added `github.com/pganalyze/pg_query_go/v6` v6.2.2 (v6 rather than the v5
+  BUILD.md names, because v5 no longer builds on recent macOS SDKs) for query
+  feature detection and classification. pg_query is cgo, so the build now needs
+  a C compiler. `google.golang.org/protobuf` is a direct dependency for the
+  reflection-based parse-tree walk.
