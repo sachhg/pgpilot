@@ -95,6 +95,7 @@ func run(args []string) error {
 		ListenAddr: cfg.Listen,
 		Users:      cfg,
 		Manager:    mgr,
+		Registry:   reg,
 		Logger:     logger,
 	})
 	addr, err := srv.Listen()
