@@ -1,0 +1,13 @@
+{
+  "listen": "127.0.0.1:6432",
+  "primary": "127.0.0.1:55432",
+  "users": [
+    {"name": "pgpilot", "password": "pgpilot"}
+  ],
+  "pool": {
+    "max_size": 10,
+    "max_waiters": 100,
+    "acquire_timeout": "5s",
+    "idle_timeout": "5m"
+  }
+}
