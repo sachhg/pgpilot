@@ -47,8 +47,10 @@ The goal is to do one thing — correct, observable read/write routing — well.
 Early development, built in phases (see the roadmap). Not production-ready yet.
 Today pgpilot is an **authenticating connection pooler**: it verifies each
 client with SCRAM-SHA-256 and hands it a pooled, SCRAM-authenticated connection
-to a single primary, in either session or transaction pooling mode. Read/write
-routing across replicas and LSN fencing arrive in later phases.
+to a single primary, in either session or transaction pooling mode. The
+read/write query classifier that will drive routing across replicas is built and
+tested; hooking it up to a replica registry, LSN fencing, and a policy engine
+comes next.
 
 ## Roadmap
 
@@ -59,8 +61,8 @@ routing across replicas and LSN fencing arrive in later phases.
 |     2 | Transparent proxy (byte-level passthrough)                   | done   |
 |     3 | Protocol codec (typed frontend/backend messages)            | done   |
 |     4 | Connection pooling (session + transaction)                  | done   |
-|     5 | Query classification (read vs. write via pg_query)          | next   |
-|     6 | Replica registry, health polling, circuit breakers          |        |
+|     5 | Query classification (read vs. write via pg_query)          | done   |
+|     6 | Replica registry, health polling, circuit breakers          | next   |
 |     7 | LSN fencing                                                  |        |
 |     8 | Routing policy engine                                        |        |
 |     9 | Observability (Prometheus, structured logs, pprof)          |        |
@@ -73,9 +75,9 @@ routing across replicas and LSN fencing arrive in later phases.
 - Go 1.22+, standard library first
 - [`jackc/pgx/v5/pgproto3`](https://github.com/jackc/pgx) — wire protocol codec
 - [`pganalyze/pg_query_go`](https://github.com/pganalyze/pg_query_go) — the real
-  Postgres parser, for query feature detection and (later) classification. Uses
-  v6 rather than v5, which no longer builds on recent macOS SDKs; this makes the
-  build require a C compiler (cgo).
+  Postgres parser, for query feature detection and read/write classification.
+  Uses v6 rather than v5, which no longer builds on recent macOS SDKs; this makes
+  the build require a C compiler (cgo).
 - [`prometheus/client_golang`](https://github.com/prometheus/client_golang) —
   metrics
 
@@ -159,15 +161,23 @@ requests are not yet supported. See
   backend, so those features keep working. See
   [`docs/adr/0005-transaction-pooling-and-feature-detection.md`](docs/adr/0005-transaction-pooling-and-feature-detection.md).
 
+### Read/write classification
+
+`internal/classify` decides, from a query's parse tree, whether it may be served
+by a replica or must run on the primary — correctly handling the cases that trip
+up naive routers (`SELECT ... FOR UPDATE`, data-modifying CTEs, volatile
+functions, `EXPLAIN ANALYZE`, multi-statement queries, and explicit
+transactions). It is the engine the routing phases will consume; see
+[`docs/adr/0006-query-classification.md`](docs/adr/0006-query-classification.md).
+
 ### Protocol awareness
 
 pgpilot frames every message on the wire and decodes the ones it routes on,
 using `jackc/pgx`'s `pgproto3` (see [`internal/protocol`](internal/protocol)). It
 tracks each session's transaction status from the backend's ReadyForQuery
-indicator (`I`/`T`/`E`) — the signal the router will use to pin a session to one
-backend for the life of a transaction. Run with `-log-level debug` to watch the
-transitions. The message decoder is fuzzed and hardened against malformed input
-(see [`docs/adr/0003-message-aware-relay.md`](docs/adr/0003-message-aware-relay.md)).
+indicator (`I`/`T`/`E`). Run with `-log-level debug` to watch the transitions.
+The message decoder is fuzzed and hardened against malformed input (see
+[`docs/adr/0003-message-aware-relay.md`](docs/adr/0003-message-aware-relay.md)).
 
 ## License
 
