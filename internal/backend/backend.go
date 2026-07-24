@@ -147,6 +147,19 @@ func (c *Conn) Reset(ctx context.Context) error {
 	return nil
 }
 
+// DiscardAll clears session state (prepared statements, temp tables, LISTEN
+// registrations, session GUCs, advisory locks) with a single DISCARD ALL. It is
+// used to clean a connection between transactions in transaction pooling, where
+// the connection is known to be idle (no open transaction to roll back first).
+func (c *Conn) DiscardAll(ctx context.Context) error {
+	fe, restore := c.frontend(ctx)
+	defer restore()
+	if err := runSimple(fe, "DISCARD ALL"); err != nil {
+		return fmt.Errorf("backend: discard all: %w", err)
+	}
+	return nil
+}
+
 // Ping checks the connection is alive and at a clean ReadyForQuery state by
 // running a no-op query. It is suitable as a pool health check.
 func (c *Conn) Ping(ctx context.Context) error {
