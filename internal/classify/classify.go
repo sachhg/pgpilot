@@ -44,6 +44,18 @@ var volatileFuncs = map[string]struct{}{
 	"clock_timestamp": {}, "timeofday": {}, "pg_sleep": {},
 }
 
+// Fingerprint returns pg_query's stable fingerprint of a query — a hash of its
+// parse tree with literals normalized away, so queries that differ only in their
+// constants share a fingerprint. Load-aware routing uses it to key per-shape
+// latency estimates. An unparseable query has no fingerprint and returns "".
+func Fingerprint(sql string) string {
+	fp, err := pg.Fingerprint(sql)
+	if err != nil {
+		return ""
+	}
+	return fp
+}
+
 // Classify returns the routing class of a simple-query string, which may contain
 // several statements. It is a Write if any statement is a Write.
 func Classify(sql string) Class {
