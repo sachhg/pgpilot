@@ -19,6 +19,7 @@ import (
 	"github.com/sachhg/pgpilot/internal/config"
 	"github.com/sachhg/pgpilot/internal/proxy"
 	"github.com/sachhg/pgpilot/internal/registry"
+	"github.com/sachhg/pgpilot/internal/router"
 )
 
 // version is the build version, overridden via -ldflags "-X main.version=...".
@@ -91,11 +92,17 @@ func run(args []string) error {
 	reg.Start(ctx, backendsFrom(cfg))
 	go reloadOnHUP(ctx, logger, *configPath, reg)
 
+	policy, err := router.New(cfg.Routing.Policy)
+	if err != nil {
+		return err
+	}
+
 	srv := proxy.New(proxy.Config{
 		ListenAddr: cfg.Listen,
 		Users:      cfg,
 		Manager:    mgr,
 		Registry:   reg,
+		Policy:     policy,
 		Logger:     logger,
 	})
 	addr, err := srv.Listen()

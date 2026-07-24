@@ -18,6 +18,7 @@ import (
 	"github.com/sachhg/pgpilot/internal/config"
 	"github.com/sachhg/pgpilot/internal/protocol"
 	"github.com/sachhg/pgpilot/internal/registry"
+	"github.com/sachhg/pgpilot/internal/router"
 )
 
 // Config configures a proxy Server.
@@ -32,6 +33,9 @@ type Config struct {
 	// Registry reports backend health and lag for read routing. Nil disables
 	// routing (every session is served by the primary).
 	Registry *registry.Registry
+	// Policy selects which eligible replica serves each read. Nil resolves the
+	// policy named in Users.Routing.Policy, defaulting to least-in-flight.
+	Policy router.Policy
 	// Logger receives structured logs. Nil selects slog.Default.
 	Logger *slog.Logger
 }
@@ -39,8 +43,9 @@ type Config struct {
 // Server is pgpilot's client-facing proxy. Construct it with New, then call
 // Listen and Serve.
 type Server struct {
-	cfg Config
-	log *slog.Logger
+	cfg    Config
+	log    *slog.Logger
+	policy router.Policy
 
 	sessions atomic.Uint64
 	wg       sync.WaitGroup
@@ -55,7 +60,26 @@ func New(cfg Config) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{cfg: cfg, log: logger}
+	return &Server{cfg: cfg, log: logger, policy: resolvePolicy(cfg)}
+}
+
+// resolvePolicy returns cfg.Policy, or constructs the policy named in the config
+// (defaulting to least-in-flight) when the caller did not inject one. The single
+// returned instance is shared across every session, since load-aware policies
+// track in-flight work across the whole proxy.
+func resolvePolicy(cfg Config) router.Policy {
+	if cfg.Policy != nil {
+		return cfg.Policy
+	}
+	name := router.PolicyLeastInFlight
+	if cfg.Users != nil && cfg.Users.Routing.Policy != "" {
+		name = cfg.Users.Routing.Policy
+	}
+	p, err := router.New(name)
+	if err != nil {
+		return router.NewLeastInFlight()
+	}
+	return p
 }
 
 // Listen binds the configured listen address and returns the resolved address.
@@ -128,6 +152,7 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 		cfg:      s.cfg.Users,
 		manager:  s.cfg.Manager,
 		registry: s.cfg.Registry,
+		policy:   s.policy,
 		log:      log,
 		tracker:  &protocol.TxTracker{},
 	}
