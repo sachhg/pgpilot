@@ -65,6 +65,25 @@ func TestLoad_AppliesDefaults(t *testing.T) {
 	if c.Pool.IdleTimeout.Std() != 5*time.Minute {
 		t.Errorf("default IdleTimeout = %v, want 5m", c.Pool.IdleTimeout.Std())
 	}
+	if c.Pool.Mode != config.ModeSession {
+		t.Errorf("default Mode = %q, want %q", c.Pool.Mode, config.ModeSession)
+	}
+}
+
+func TestLoad_TransactionMode(t *testing.T) {
+	path := writeConfig(t, `{
+		"listen": "127.0.0.1:6432",
+		"primary": "127.0.0.1:55432",
+		"users": [{"name": "u", "password": "p"}],
+		"pool": {"mode": "transaction"}
+	}`)
+	c, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Pool.Mode != config.ModeTransaction {
+		t.Errorf("Mode = %q, want %q", c.Pool.Mode, config.ModeTransaction)
+	}
 }
 
 func TestLoad_Errors(t *testing.T) {
@@ -74,6 +93,7 @@ func TestLoad_Errors(t *testing.T) {
 		"no users":        `{"listen":"x","primary":"y","users":[]}`,
 		"duplicate user":  `{"listen":"x","primary":"y","users":[{"name":"u","password":"a"},{"name":"u","password":"b"}]}`,
 		"bad duration":    `{"listen":"x","primary":"y","users":[{"name":"u","password":"p"}],"pool":{"acquire_timeout":"nope"}}`,
+		"bad pool mode":   `{"listen":"x","primary":"y","users":[{"name":"u","password":"p"}],"pool":{"mode":"bogus"}}`,
 		"unknown field":   `{"listen":"x","primary":"y","users":[{"name":"u","password":"p"}],"bogus":1}`,
 		"bad json":        `{`,
 	}

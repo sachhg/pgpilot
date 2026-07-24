@@ -28,8 +28,18 @@ type User struct {
 	Password string `json:"password"`
 }
 
-// Pool holds connection-pool sizing, shared by every (user, database) pool.
+// Pool-mode values.
+const (
+	ModeSession     = "session"
+	ModeTransaction = "transaction"
+)
+
+// Pool holds connection-pool sizing and the pooling mode, shared by every
+// (user, database) pool.
 type Pool struct {
+	// Mode is "session" (a client holds a backend for its whole session) or
+	// "transaction" (a backend is returned to the pool between transactions).
+	Mode           string   `json:"mode"`
 	MaxSize        int      `json:"max_size"`
 	MaxWaiters     int      `json:"max_waiters"`
 	AcquireTimeout Duration `json:"acquire_timeout"`
@@ -82,6 +92,9 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) applyDefaults() {
+	if c.Pool.Mode == "" {
+		c.Pool.Mode = ModeSession
+	}
 	if c.Pool.MaxSize == 0 {
 		c.Pool.MaxSize = 10
 	}
@@ -115,6 +128,9 @@ func (c *Config) validate() error {
 	}
 	if c.Pool.MaxSize < 1 {
 		return fmt.Errorf("config: pool.max_size must be >= 1")
+	}
+	if c.Pool.Mode != ModeSession && c.Pool.Mode != ModeTransaction {
+		return fmt.Errorf("config: pool.mode must be %q or %q, got %q", ModeSession, ModeTransaction, c.Pool.Mode)
 	}
 	return nil
 }
