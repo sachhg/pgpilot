@@ -14,10 +14,26 @@ import (
 
 // Config is the top-level pgpilot configuration.
 type Config struct {
-	Listen  string `json:"listen"`
-	Primary string `json:"primary"`
-	Users   []User `json:"users"`
-	Pool    Pool   `json:"pool"`
+	Listen   string   `json:"listen"`
+	Primary  string   `json:"primary"`
+	Replicas []string `json:"replicas"`
+	Users    []User   `json:"users"`
+	Pool     Pool     `json:"pool"`
+	Health   Health   `json:"health"`
+}
+
+// Health configures the background poller that tracks each backend's recovery
+// state and replication lag and trips a circuit breaker on failure.
+type Health struct {
+	// Interval is how often a healthy backend is polled.
+	Interval Duration `json:"interval"`
+	// FailureThreshold is the number of consecutive poll failures after which a
+	// backend is marked unhealthy (the breaker trips).
+	FailureThreshold int `json:"failure_threshold"`
+	// BaseBackoff and MaxBackoff bound the exponential backoff between poll
+	// attempts while a backend is failing.
+	BaseBackoff Duration `json:"base_backoff"`
+	MaxBackoff  Duration `json:"max_backoff"`
 }
 
 // User is a role pgpilot authenticates. The password is used both to verify a
@@ -103,6 +119,18 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Pool.IdleTimeout == 0 {
 		c.Pool.IdleTimeout = Duration(5 * time.Minute)
+	}
+	if c.Health.Interval == 0 {
+		c.Health.Interval = Duration(time.Second)
+	}
+	if c.Health.FailureThreshold == 0 {
+		c.Health.FailureThreshold = 3
+	}
+	if c.Health.BaseBackoff == 0 {
+		c.Health.BaseBackoff = Duration(time.Second)
+	}
+	if c.Health.MaxBackoff == 0 {
+		c.Health.MaxBackoff = Duration(30 * time.Second)
 	}
 }
 

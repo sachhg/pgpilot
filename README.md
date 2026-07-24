@@ -45,12 +45,12 @@ The goal is to do one thing — correct, observable read/write routing — well.
 ## Status
 
 Early development, built in phases (see the roadmap). Not production-ready yet.
-Today pgpilot is an **authenticating connection pooler**: it verifies each
-client with SCRAM-SHA-256 and hands it a pooled, SCRAM-authenticated connection
-to a single primary, in either session or transaction pooling mode. The
-read/write query classifier that will drive routing across replicas is built and
-tested; hooking it up to a replica registry, LSN fencing, and a policy engine
-comes next.
+Today pgpilot is an **authenticating connection pooler** that also tracks the
+health of the cluster: it verifies each client with SCRAM-SHA-256, hands it a
+pooled connection (session or transaction mode), and runs a background poller
+that reports each backend's role and replication lag. The read/write classifier
+and the health registry that will drive routing are built and tested; wiring
+them into LSN fencing and a policy engine comes next.
 
 ## Roadmap
 
@@ -62,8 +62,8 @@ comes next.
 |     3 | Protocol codec (typed frontend/backend messages)            | done   |
 |     4 | Connection pooling (session + transaction)                  | done   |
 |     5 | Query classification (read vs. write via pg_query)          | done   |
-|     6 | Replica registry, health polling, circuit breakers          | next   |
-|     7 | LSN fencing                                                  |        |
+|     6 | Replica registry, health polling, circuit breakers          | done   |
+|     7 | LSN fencing                                                  | next   |
 |     8 | Routing policy engine                                        |        |
 |     9 | Observability (Prometheus, structured logs, pprof)          |        |
 |    10 | Fault-injection harness                                      |        |
@@ -122,8 +122,10 @@ pgpilot reads a JSON config file (see [`pgpilot.example.json`](pgpilot.example.j
 {
   "listen": "127.0.0.1:6432",
   "primary": "127.0.0.1:55432",
+  "replicas": ["127.0.0.1:55433", "127.0.0.1:55434"],
   "users": [{"name": "pgpilot", "password": "pgpilot"}],
-  "pool": {"mode": "session", "max_size": 10, "max_waiters": 100, "acquire_timeout": "5s", "idle_timeout": "5m"}
+  "pool": {"mode": "session", "max_size": 10, "acquire_timeout": "5s", "idle_timeout": "5m"},
+  "health": {"interval": "1s", "failure_threshold": 3, "base_backoff": "1s", "max_backoff": "30s"}
 }
 ```
 
@@ -141,43 +143,39 @@ pgpilot **verifies the client** with SCRAM-SHA-256 against the password in the
 config, then hands the session a pooled connection it opened to the primary
 (also with SCRAM). Connections are keyed by `(user, database)` and drawn from a
 bounded pool that applies backpressure. Because TLS is refused for now, clients
-must permit a cleartext connection (libpq's default `sslmode=prefer` falls back
-automatically; `sslmode=require` fails until TLS termination lands). Cancel
-requests are not yet supported. See
-[`docs/adr/0004-auth-termination-and-pooling.md`](docs/adr/0004-auth-termination-and-pooling.md).
+must permit a cleartext connection (`sslmode=prefer` falls back automatically).
+See [`docs/adr/0004-auth-termination-and-pooling.md`](docs/adr/0004-auth-termination-and-pooling.md).
 
 ### Pool modes
 
 `pool.mode` selects how long a client keeps a backend:
 
-- **`session`** (default) — a client holds one backend for its whole session;
-  the backend returns to the pool, reset with `DISCARD ALL`, when the client
-  disconnects.
-- **`transaction`** — a backend returns to the pool *between transactions*, so
-  idle clients do not tie one up. pgpilot uses `pg_query` to detect statements
-  that break transaction pooling — prepared statements, temporary tables,
-  `LISTEN`/`NOTIFY`, and session GUCs (`SET`, but not `SET LOCAL`) — and **pins**
-  such a session (and any session using the extended query protocol) to its
-  backend, so those features keep working. See
+- **`session`** (default) — a client holds one backend for its whole session.
+- **`transaction`** — a backend returns to the pool *between transactions*, with
+  `pg_query`-based detection that **pins** a session using a feature transaction
+  pooling would break (prepared statements, temp tables, `LISTEN`/`NOTIFY`,
+  session GUCs). See
   [`docs/adr/0005-transaction-pooling-and-feature-detection.md`](docs/adr/0005-transaction-pooling-and-feature-detection.md).
+
+### Health and replication lag
+
+A background poller (`internal/registry`) queries the primary and every replica
+for recovery state and replication lag — in **bytes** (the WAL gap to the
+primary) and **seconds** (age of the last replayed transaction) — and trips a
+per-backend **circuit breaker** with exponential backoff when a backend stops
+responding, probing for its recovery. `SIGHUP` reloads the replica set without a
+restart. Run with `-log-level debug` to watch the polls; the design is recorded
+in
+[`docs/adr/0007-replica-registry-and-health.md`](docs/adr/0007-replica-registry-and-health.md).
 
 ### Read/write classification
 
 `internal/classify` decides, from a query's parse tree, whether it may be served
-by a replica or must run on the primary — correctly handling the cases that trip
-up naive routers (`SELECT ... FOR UPDATE`, data-modifying CTEs, volatile
-functions, `EXPLAIN ANALYZE`, multi-statement queries, and explicit
-transactions). It is the engine the routing phases will consume; see
+by a replica or must run on the primary — correctly handling `SELECT ... FOR
+UPDATE`, data-modifying CTEs, volatile functions, `EXPLAIN ANALYZE`,
+multi-statement queries, and explicit transactions. It is the engine the routing
+phases will consume; see
 [`docs/adr/0006-query-classification.md`](docs/adr/0006-query-classification.md).
-
-### Protocol awareness
-
-pgpilot frames every message on the wire and decodes the ones it routes on,
-using `jackc/pgx`'s `pgproto3` (see [`internal/protocol`](internal/protocol)). It
-tracks each session's transaction status from the backend's ReadyForQuery
-indicator (`I`/`T`/`E`). Run with `-log-level debug` to watch the transitions.
-The message decoder is fuzzed and hardened against malformed input (see
-[`docs/adr/0003-message-aware-relay.md`](docs/adr/0003-message-aware-relay.md)).
 
 ## License
 

@@ -1,6 +1,7 @@
 {
   "listen": "127.0.0.1:6432",
   "primary": "127.0.0.1:55432",
+  "replicas": ["127.0.0.1:55433", "127.0.0.1:55434"],
   "users": [
     {"name": "pgpilot", "password": "pgpilot"}
   ],
@@ -10,5 +11,11 @@
     "max_waiters": 100,
     "acquire_timeout": "5s",
     "idle_timeout": "5m"
+  },
+  "health": {
+    "interval": "1s",
+    "failure_threshold": 3,
+    "base_backoff": "1s",
+    "max_backoff": "30s"
   }
 }

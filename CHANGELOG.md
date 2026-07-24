@@ -39,14 +39,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a session using a feature transaction pooling would break. Validated against
   real PostgreSQL and psql in both modes. Rationale in ADRs 0004 and 0005.
 - Query classification (Phase 5): `internal/classify` decides whether a query
-  may be served by a replica (read) or must go to the primary (write), using
-  `pg_query` rather than string matching. It handles the cases that trip up
-  naive routers — row-locking `SELECT`s, data-modifying CTEs, volatile
-  functions, `EXPLAIN ANALYZE`, multi-statement queries, and explicit
-  transaction blocks (pinned to the primary) — and defaults to the primary for
-  anything it cannot prove is a safe read. Table-driven tests cover every case.
-  This is the engine the routing phase will consume. Rationale in
-  `docs/adr/0006-query-classification.md`.
+  may be served by a replica (read) or must go to the primary (write) using
+  `pg_query`, handling the cases that trip up naive routers. Table-driven tests
+  cover every case. Rationale in `docs/adr/0006-query-classification.md`.
+- Replica registry and health (Phase 6): `internal/registry` runs a background
+  poller that queries the primary and each replica for recovery state, WAL
+  position, and replay timestamp; it derives replication lag in bytes (from the
+  LSN gap to the primary) and seconds (from the replay timestamp), and trips a
+  per-backend circuit breaker with exponential backoff when polling fails,
+  probing for recovery. The config gains `replicas` and `health` settings, and
+  `SIGHUP` reloads the replica set without a restart. The registry runs in the
+  binary (visible with `-log-level debug`) and is the health source the routing
+  phase will consult. Rationale in
+  `docs/adr/0007-replica-registry-and-health.md`.
 
 ### Dependencies
 

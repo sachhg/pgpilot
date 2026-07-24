@@ -171,6 +171,39 @@ func (c *Conn) Ping(ctx context.Context) error {
 	return nil
 }
 
+// QueryRow runs a simple query and returns the first row's column values as
+// strings (a NULL value becomes ""). It is used by the health poller.
+func (c *Conn) QueryRow(ctx context.Context, sql string) ([]string, error) {
+	fe, restore := c.frontend(ctx)
+	defer restore()
+	fe.Send(&pgproto3.Query{String: sql})
+	if err := fe.Flush(); err != nil {
+		return nil, fmt.Errorf("backend: query flush: %w", err)
+	}
+	var row []string
+	for {
+		msg, err := fe.Receive()
+		if err != nil {
+			return nil, fmt.Errorf("backend: query receive: %w", err)
+		}
+		switch m := msg.(type) {
+		case *pgproto3.DataRow:
+			if row == nil {
+				row = make([]string, len(m.Values))
+				for i, v := range m.Values {
+					if v != nil {
+						row[i] = string(v)
+					}
+				}
+			}
+		case *pgproto3.ReadyForQuery:
+			return row, nil
+		case *pgproto3.ErrorResponse:
+			return nil, fmt.Errorf("backend: query error: %s %s", m.Code, m.Message)
+		}
+	}
+}
+
 // frontend returns a pgproto3 Frontend over the connection, applying ctx's
 // deadline for the duration; restore clears it.
 func (c *Conn) frontend(ctx context.Context) (fe *pgproto3.Frontend, restore func()) {

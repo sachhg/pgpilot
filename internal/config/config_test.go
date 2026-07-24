@@ -86,6 +86,44 @@ func TestLoad_TransactionMode(t *testing.T) {
 	}
 }
 
+func TestLoad_ReplicasAndHealth(t *testing.T) {
+	path := writeConfig(t, `{
+		"listen": "127.0.0.1:6432",
+		"primary": "127.0.0.1:55432",
+		"replicas": ["127.0.0.1:55433", "127.0.0.1:55434"],
+		"users": [{"name": "u", "password": "p"}],
+		"health": {"interval": "2s", "failure_threshold": 5}
+	}`)
+	c, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(c.Replicas) != 2 {
+		t.Errorf("replicas = %v, want 2", c.Replicas)
+	}
+	if c.Health.Interval.Std() != 2*time.Second {
+		t.Errorf("health interval = %v, want 2s", c.Health.Interval.Std())
+	}
+	if c.Health.FailureThreshold != 5 {
+		t.Errorf("failure threshold = %d, want 5", c.Health.FailureThreshold)
+	}
+	// Health defaults are applied when omitted.
+	if c.Health.BaseBackoff.Std() != time.Second || c.Health.MaxBackoff.Std() != 30*time.Second {
+		t.Errorf("backoff defaults = %v / %v", c.Health.BaseBackoff.Std(), c.Health.MaxBackoff.Std())
+	}
+}
+
+func TestLoad_HealthDefaults(t *testing.T) {
+	path := writeConfig(t, `{"listen":"x","primary":"y","users":[{"name":"u","password":"p"}]}`)
+	c, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Health.Interval.Std() != time.Second || c.Health.FailureThreshold != 3 {
+		t.Errorf("health defaults = %+v", c.Health)
+	}
+}
+
 func TestLoad_Errors(t *testing.T) {
 	cases := map[string]string{
 		"missing listen":  `{"primary":"x","users":[{"name":"u","password":"p"}]}`,
