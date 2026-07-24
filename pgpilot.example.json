@@ -5,6 +5,7 @@
     {"name": "pgpilot", "password": "pgpilot"}
   ],
   "pool": {
+    "mode": "session",
     "max_size": 10,
     "max_waiters": 100,
     "acquire_timeout": "5s",
