@@ -52,6 +52,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   integration test proves that, with replication paused via
   `pg_wal_replay_pause()`, a write followed by a read never observes a stale
   value under strict mode. Rationale in `docs/adr/0008-lsn-fencing.md`.
+- Routing policy engine (Phase 8): `internal/router` makes replica selection
+  pluggable behind a `Policy` interface, choosing among the replicas the fence
+  has already deemed eligible. Three policies ship — `round-robin`,
+  `least-in-flight` (the default), and `scored`, which ranks replicas by
+  estimated completion time using an EWMA of each query shape's latency keyed by
+  pg_query fingerprint, steering expensive shapes away from busy replicas.
+  `routing.policy` selects one. A deterministic discrete-event simulator
+  compares the policies on a synthetic mixed workload with no database, and an
+  integration test asserts reads spread across both replicas. Rationale in
+  `docs/adr/0009-routing-policy-engine.md`.
 
 ### Dependencies
 
