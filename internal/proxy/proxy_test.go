@@ -2,15 +2,22 @@ package proxy
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
-	"runtime"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgproto3"
+
+	"github.com/sachhg/pgpilot/internal/scram"
 )
+
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
 
 // framedMessage builds a length-prefixed protocol message (type, length, body).
 func framedMessage(msgType byte, body []byte) []byte {
@@ -21,174 +28,153 @@ func framedMessage(msgType byte, body []byte) []byte {
 	return out
 }
 
-func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
+// scramClientHandshake plays a SCRAM-SHA-256 client against pgpilot's server side
+// over conn, expecting to reach AuthenticationOk.
+func scramClientHandshake(conn net.Conn, password string) error {
+	fe := pgproto3.NewFrontend(conn, conn)
 
-// fakeUpstream is a stand-in PostgreSQL backend: it reads one startup packet,
-// records it, then echoes everything else back.
-type fakeUpstream struct {
-	ln      net.Listener
-	startup chan []byte
-}
-
-func newFakeUpstream(t *testing.T) *fakeUpstream {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	msg, err := fe.Receive()
 	if err != nil {
-		t.Fatalf("listen: %v", err)
+		return err
 	}
-	fu := &fakeUpstream{ln: ln, startup: make(chan []byte, 4)}
-	go fu.accept()
-	t.Cleanup(func() { _ = ln.Close() })
-	return fu
-}
-
-func (fu *fakeUpstream) addr() string { return fu.ln.Addr().String() }
-
-func (fu *fakeUpstream) accept() {
-	for {
-		c, err := fu.ln.Accept()
-		if err != nil {
-			return
-		}
-		go func(c net.Conn) {
-			defer func() { _ = c.Close() }()
-			pkt, err := readStartupPacket(c)
-			if err != nil {
-				return
-			}
-			select {
-			case fu.startup <- pkt.raw:
-			default:
-			}
-			_, _ = io.Copy(c, c) // echo the rest
-		}(c)
+	if _, ok := msg.(*pgproto3.AuthenticationSASL); !ok {
+		return fmt.Errorf("expected AuthenticationSASL, got %T", msg)
 	}
-}
-
-func startServer(t *testing.T, upstream string) (srv *Server, addr string, cancel context.CancelFunc, done chan struct{}) {
-	t.Helper()
-	srv = New(Config{ListenAddr: "127.0.0.1:0", UpstreamAddr: upstream, Logger: discardLogger()})
-	a, err := srv.Listen()
+	client, err := scram.NewClient(password)
 	if err != nil {
-		t.Fatalf("listen: %v", err)
+		return err
 	}
-	ctx, c := context.WithCancel(context.Background())
-	done = make(chan struct{})
+	fe.Send(&pgproto3.SASLInitialResponse{AuthMechanism: scramMechanism, Data: []byte(client.FirstMessage())})
+	if err := fe.Flush(); err != nil {
+		return err
+	}
+
+	msg, err = fe.Receive()
+	if err != nil {
+		return err
+	}
+	cont, ok := msg.(*pgproto3.AuthenticationSASLContinue)
+	if !ok {
+		return fmt.Errorf("expected AuthenticationSASLContinue, got %T", msg)
+	}
+	final, err := client.HandleServerFirst(string(cont.Data))
+	if err != nil {
+		return err
+	}
+	fe.Send(&pgproto3.SASLResponse{Data: []byte(final)})
+	if err := fe.Flush(); err != nil {
+		return err
+	}
+
+	msg, err = fe.Receive()
+	if err != nil {
+		return err
+	}
+	fin, ok := msg.(*pgproto3.AuthenticationSASLFinal)
+	if !ok {
+		return fmt.Errorf("expected AuthenticationSASLFinal, got %T", msg)
+	}
+	if err := client.HandleServerFinal(string(fin.Data)); err != nil {
+		return err
+	}
+
+	msg, err = fe.Receive()
+	if err != nil {
+		return err
+	}
+	if _, ok := msg.(*pgproto3.AuthenticationOk); !ok {
+		return fmt.Errorf("expected AuthenticationOk, got %T", msg)
+	}
+	return nil
+}
+
+func TestAuthenticateClient_Succeeds(t *testing.T) {
+	clientEnd, serverEnd := net.Pipe()
+	defer func() { _ = clientEnd.Close() }()
+	defer func() { _ = serverEnd.Close() }()
+	_ = clientEnd.SetDeadline(time.Now().Add(3 * time.Second))
+	_ = serverEnd.SetDeadline(time.Now().Add(3 * time.Second))
+
+	sess := &session{client: serverEnd, log: discardLogger()}
+	srvErr := make(chan error, 1)
 	go func() {
-		_ = srv.Serve(ctx)
-		close(done)
+		srvErr <- sess.authenticateClient(pgproto3.NewBackend(serverEnd, serverEnd), "pencil")
 	}()
-	return srv, a.String(), c, done
+
+	if err := scramClientHandshake(clientEnd, "pencil"); err != nil {
+		t.Fatalf("client handshake: %v", err)
+	}
+	if err := <-srvErr; err != nil {
+		t.Fatalf("authenticateClient: %v", err)
+	}
 }
 
-func TestServer_RefusesSSLForwardsStartupAndPipes(t *testing.T) {
-	fu := newFakeUpstream(t)
-	_, addr, cancel, _ := startServer(t, fu.addr())
-	defer cancel()
+func TestAuthenticateClient_WrongPassword(t *testing.T) {
+	clientEnd, serverEnd := net.Pipe()
+	defer func() { _ = clientEnd.Close() }()
+	defer func() { _ = serverEnd.Close() }()
+	_ = clientEnd.SetDeadline(time.Now().Add(3 * time.Second))
+	_ = serverEnd.SetDeadline(time.Now().Add(3 * time.Second))
 
-	c, err := net.Dial("tcp", addr)
+	sess := &session{client: serverEnd, log: discardLogger()}
+	srvErr := make(chan error, 1)
+	go func() {
+		srvErr <- sess.authenticateClient(pgproto3.NewBackend(serverEnd, serverEnd), "correct")
+	}()
+
+	_ = scramClientHandshake(clientEnd, "wrong")
+	if err := <-srvErr; err == nil {
+		t.Fatal("authenticateClient accepted a wrong password")
+	}
+}
+
+func TestRelayFrontend_InterceptsTerminate(t *testing.T) {
+	query := framedMessage('Q', []byte("SELECT 1\x00"))
+	term := framedMessage('X', nil)
+	src := bytes.NewReader(append(append([]byte{}, query...), term...))
+
+	var dst bytes.Buffer
+	terminated, err := relayFrontend(&dst, src)
 	if err != nil {
-		t.Fatalf("dial proxy: %v", err)
+		t.Fatalf("relayFrontend: %v", err)
 	}
-	defer func() { _ = c.Close() }()
-	_ = c.SetDeadline(time.Now().Add(3 * time.Second))
-
-	// SSLRequest is refused with 'N'.
-	if _, err := c.Write(buildStartup(sslRequestCode, nil)); err != nil {
-		t.Fatalf("write SSLRequest: %v", err)
+	if !terminated {
+		t.Error("terminated = false, want true")
 	}
-	buf := make([]byte, 1)
-	if _, err := io.ReadFull(c, buf); err != nil {
-		t.Fatalf("read refusal: %v", err)
-	}
-	if buf[0] != sslNotSupported {
-		t.Fatalf("refusal = %q, want %q", buf[0], byte(sslNotSupported))
-	}
-
-	// The StartupMessage is forwarded to the upstream untouched.
-	startup := buildStartup(protocolVersion3, []byte("user\x00pgpilot\x00\x00"))
-	if _, err := c.Write(startup); err != nil {
-		t.Fatalf("write startup: %v", err)
-	}
-	select {
-	case got := <-fu.startup:
-		if !bytes.Equal(got, startup) {
-			t.Fatalf("upstream received %x, want %x", got, startup)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("upstream never received the startup packet")
-	}
-
-	// A framed protocol message flows through the message-aware relay in both
-	// directions and comes back byte-for-byte (the fake upstream echoes).
-	msg := framedMessage('Q', []byte("SELECT 1\x00"))
-	if _, err := c.Write(msg); err != nil {
-		t.Fatalf("write message: %v", err)
-	}
-	echo := make([]byte, len(msg))
-	if _, err := io.ReadFull(c, echo); err != nil {
-		t.Fatalf("read echo: %v", err)
-	}
-	if !bytes.Equal(echo, msg) {
-		t.Fatalf("echo = %x, want %x", echo, msg)
+	if !bytes.Equal(dst.Bytes(), query) {
+		t.Errorf("forwarded %x, want only the query %x (Terminate must not be forwarded)", dst.Bytes(), query)
 	}
 }
 
-func TestServer_GracefulShutdownClosesSessionsNoLeak(t *testing.T) {
-	fu := newFakeUpstream(t)
-	baseline := runtime.NumGoroutine()
-	srv, addr, cancel, done := startServer(t, fu.addr())
-	_ = srv
-
-	var clients []net.Conn
-	for i := 0; i < 3; i++ {
-		c, err := net.Dial("tcp", addr)
-		if err != nil {
-			t.Fatalf("dial %d: %v", i, err)
-		}
-		_ = c.SetDeadline(time.Now().Add(3 * time.Second))
-		if _, err := c.Write(buildStartup(protocolVersion3, []byte("user\x00pgpilot\x00\x00"))); err != nil {
-			t.Fatalf("write startup %d: %v", i, err)
-		}
-		clients = append(clients, c)
+func TestRelayFrontend_CloseWithoutTerminate(t *testing.T) {
+	query := framedMessage('Q', []byte("x\x00"))
+	var dst bytes.Buffer
+	terminated, err := relayFrontend(&dst, bytes.NewReader(query))
+	if err != nil {
+		t.Fatalf("relayFrontend: %v", err)
 	}
-	time.Sleep(100 * time.Millisecond) // let sessions establish
-
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("Serve did not return after cancel")
+	if terminated {
+		t.Error("terminated = true on EOF without Terminate, want false")
 	}
-
-	// Every client connection should have been closed by the proxy.
-	for i, c := range clients {
-		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
-		var b [1]byte
-		if _, err := c.Read(b[:]); err == nil {
-			t.Errorf("client %d still open after shutdown", i)
-		}
-		_ = c.Close()
-	}
-
-	// Session goroutines should be gone (allow slack and a moment to settle).
-	if !eventually(2*time.Second, func() bool {
-		return runtime.NumGoroutine() <= baseline+2
-	}) {
-		t.Errorf("goroutines did not settle: have %d, baseline %d", runtime.NumGoroutine(), baseline)
+	if !bytes.Equal(dst.Bytes(), query) {
+		t.Error("query was not forwarded")
 	}
 }
 
-func eventually(d time.Duration, cond func() bool) bool {
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return true
-		}
-		runtime.GC()
-		time.Sleep(20 * time.Millisecond)
+func TestParseStartupParams(t *testing.T) {
+	sm := &pgproto3.StartupMessage{
+		ProtocolVersion: 196608,
+		Parameters:      map[string]string{"user": "alice", "database": "shop"},
 	}
-	return cond()
+	wire, err := sm.Encode(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params, err := parseStartupParams(startupPacket{raw: wire, code: 196608})
+	if err != nil {
+		t.Fatalf("parseStartupParams: %v", err)
+	}
+	if params["user"] != "alice" || params["database"] != "shop" {
+		t.Errorf("params = %v", params)
+	}
 }

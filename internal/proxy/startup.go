@@ -15,6 +15,7 @@ const (
 	// message a client sends, in place of a real protocol version.
 	sslRequestCode    = 80877103 // request a TLS-encrypted connection
 	gssEncRequestCode = 80877104 // request a GSSAPI-encrypted connection
+	cancelRequestCode = 80877102 // request cancellation of an in-flight query
 )
 
 // startupPacket is a raw, length-prefixed startup-phase message from a client.
@@ -27,6 +28,7 @@ type startupPacket struct {
 
 func (p startupPacket) isSSLRequest() bool    { return p.code == sslRequestCode }
 func (p startupPacket) isGSSEncRequest() bool { return p.code == gssEncRequestCode }
+func (p startupPacket) isCancelRequest() bool { return p.code == cancelRequestCode }
 
 // readStartupPacket reads a single length-prefixed startup-phase message. The
 // four-byte length prefix counts itself; the four bytes after it are either a
