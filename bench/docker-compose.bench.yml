@@ -19,7 +19,7 @@ services:
       AUTH_TYPE: scram-sha-256
       POOL_MODE: transaction
       MAX_CLIENT_CONN: "2000"
-      DEFAULT_POOL_SIZE: "50"
+      DEFAULT_POOL_SIZE: "25"
       LISTEN_PORT: "6432"
     ports:
       - "6433:6432"
