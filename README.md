@@ -66,7 +66,16 @@ connection and to pgbouncer.
 |     9 | Observability (Prometheus, structured logs, pprof)          | done   |
 |    10 | Fault-injection harness                                      | done   |
 |    11 | Benchmarks vs. direct connection and pgbouncer              | done   |
-|    12 | Docs and the v0.1.0 release                                 | next   |
+|    12 | Docs and the v0.1.0 release                                 | done   |
+
+## Documentation
+
+- [Architecture](docs/architecture.md) — component map and the request lifecycle,
+  with diagrams.
+- [Decision records](docs/adr/) — every design decision and the alternatives
+  rejected, indexed in [`docs/adr/README.md`](docs/adr/README.md).
+- [Deploying on Kubernetes](k8s/README.md) — manifests and a `Dockerfile`.
+- [Guided demo](docs/demo.sh) — a scripted, asciinema-ready walkthrough.
 
 ## Technology
 
