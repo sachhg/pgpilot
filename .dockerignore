@@ -1,0 +1,13 @@
+# Keep the build context small and reproducible.
+.git
+.github
+.claude
+bin
+bench/results
+docs
+grafana
+k8s
+*.md
+BUILD.md
+docker-compose.yml
+.golangci.yml
