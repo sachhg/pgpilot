@@ -45,7 +45,9 @@ connections, classifies each query, and sends writes to the primary and reads to
 a replica — enforcing read-your-writes with a per-session LSN fence — and
 balances reads across eligible replicas with a selectable routing policy
 (round-robin, least-in-flight, or latency-scored). It exposes Prometheus metrics,
-per-session structured logs, and an optional pprof endpoint.
+per-session structured logs, and an optional pprof endpoint, and ships a
+reproducible [benchmark suite](#benchmarks) comparing it to a direct connection
+and to pgbouncer.
 
 ## Roadmap
 
@@ -61,8 +63,8 @@ per-session structured logs, and an optional pprof endpoint.
 |     7 | LSN fencing                                                  | done   |
 |     8 | Routing policy engine                                        | done   |
 |     9 | Observability (Prometheus, structured logs, pprof)          | done   |
-|    10 | Fault-injection harness                                      | next   |
-|    11 | Benchmarks vs. direct connection and pgbouncer              |        |
+|    10 | Fault-injection harness                                      |        |
+|    11 | Benchmarks vs. direct connection and pgbouncer              | done   |
 |    12 | Docs and the v0.1.0 release                                 |        |
 
 ## Technology
@@ -200,6 +202,86 @@ set without a restart. See
 `pg_query`-based pinning of sessions that use a feature transaction pooling would
 break. See
 [`docs/adr/0005-transaction-pooling-and-feature-detection.md`](docs/adr/0005-transaction-pooling-and-feature-detection.md).
+
+## Benchmarks
+
+A reproducible suite compares pgpilot against a **direct** connection to the
+primary and against **pgbouncer** (transaction pooling), using a custom
+read-heavy load generator (`cmd/loadgen`) for throughput and true percentiles
+plus standard **pgbench** (TPC-B) as a baseline. Bring up the stack and run it:
+
+```sh
+make up          # the cluster
+make bench-up    # pgbouncer on :6433
+make bench-suite # runs the matrix, writes bench/results/
+```
+
+Methodology and the rationale are in
+[`docs/adr/0011-benchmark-methodology.md`](docs/adr/0011-benchmark-methodology.md);
+raw results and charts land in [`bench/results/`](bench/results/).
+
+### Read the caveat first
+
+These are **single-machine** numbers: the primary and both replicas share the
+same CPU, so they **cannot** show the horizontal read-scaling win that separate
+replica hardware would give. They isolate two things instead — the cost of the
+proxy hop and routing, and how the read-your-writes fence behaves under writes.
+This is where pgpilot *loses*, published plainly.
+
+### Results
+
+Reference run on an Apple M3 Pro (11 cores, 18 GB), Postgres 16 and
+edoburu/pgbouncer 1.24.1 in Docker, 16 connections, 20 s per cell.
+
+**Read-only** (point SELECTs; pgpilot routes every read to a replica):
+
+| target | tps | p50 | p95 | p99 |
+| --- | ---: | ---: | ---: | ---: |
+| direct | 26,263 | 582µs | 867µs | 1.30ms |
+| pgbouncer | 22,874 | 681µs | 955µs | 1.19ms |
+| pgpilot (strict) | 11,462 | 1.34ms | 1.92ms | 2.60ms |
+| pgpilot (relaxed) | 11,433 | 1.33ms | 1.99ms | 2.69ms |
+
+**Read-heavy mixed** (20% point UPDATEs). The fence-fallback column is the share
+of reads pgpilot sent to the primary for read-your-writes:
+
+| target | tps | p50 | p95 | p99 | fence-fallback |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| direct | 19,566 | 603µs | 2.09ms | 2.93ms | — |
+| pgbouncer | 16,160 | 792µs | 2.03ms | 2.63ms | — |
+| pgpilot (strict) | 8,879 | 1.53ms | 3.40ms | 4.74ms | **99.8%** |
+| pgpilot (relaxed) | 8,850 | 1.54ms | 3.43ms | 4.62ms | — |
+
+**pgbench** (TPC-B, write-heavy — WAL/fsync-bound, so pooling matters little):
+
+| target | tps | latency avg |
+| --- | ---: | ---: |
+| direct | 1,793 | 8.92ms |
+| pgbouncer | 1,543 | 10.37ms |
+| pgpilot (strict) | 1,253 | 12.76ms |
+
+![read-only throughput](bench/results/throughput-readonly.svg)
+
+![read-only latency](bench/results/latency-readonly.svg)
+
+### What the numbers say
+
+- **pgpilot costs throughput.** On this hardware it serves reads at roughly half
+  a direct connection and below pgbouncer: every query is parsed and classified,
+  reads take an extra network hop, and each write costs a `pg_current_wal_lsn()`
+  round-trip to advance the fence. That is the price of routing and
+  read-your-writes, and here — with no separate replica hardware to offload onto
+  — there is no throughput upside to offset it.
+- **Strict fencing is visible.** Under 20% writes, ~99.8% of reads fall back to
+  the primary: read-your-writes, working as designed, keeps a session from
+  reading behind its own write. `relaxed` keeps those reads on the replicas, at
+  the cost of possible staleness — the same throughput here only because pgpilot
+  is proxy-bound, not backend-bound, at this concurrency.
+- **Against pgbouncer**, the honest comparison, pgpilot is slower by the work it
+  does that pgbouncer does not: classify every statement, route it, and fence.
+  pgpilot's bet is that read scaling and read-your-writes are worth that overhead
+  on real replica hardware — which this single-box benchmark deliberately does
+  not measure.
 
 ## License
 
