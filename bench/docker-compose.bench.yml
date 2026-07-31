@@ -1,0 +1,32 @@
+# Benchmark-only overlay: a pgbouncer instance to compare against pgpilot. It
+# joins the dev cluster's network and pools to the primary, so the benchmark can
+# hit a direct backend, pgpilot, and pgbouncer under the same conditions.
+#
+# Bring up after `make up`:  make bench-up   (host port 6433 -> pgbouncer)
+name: pgpilot-bench
+
+services:
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.24.1-p1
+    container_name: pgpilot-pgbouncer
+    restart: unless-stopped
+    environment:
+      DB_HOST: primary
+      DB_PORT: "5432"
+      DB_USER: pgpilot
+      DB_PASSWORD: pgpilot
+      DB_NAME: pgpilot
+      AUTH_TYPE: scram-sha-256
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: "2000"
+      DEFAULT_POOL_SIZE: "50"
+      LISTEN_PORT: "6432"
+    ports:
+      - "6433:6432"
+    networks: [pgnet]
+
+# The dev cluster (make up) owns this network; we attach to it.
+networks:
+  pgnet:
+    external: true
+    name: pgpilot-dev_pgnet
