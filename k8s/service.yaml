@@ -1,0 +1,19 @@
+# Clients connect to pgpilot on the standard Postgres port 5432 (forwarded to the
+# proxy's 6432 listener). The metrics port is exposed for a Prometheus scrape.
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgpilot
+  namespace: pgpilot
+  labels:
+    app.kubernetes.io/name: pgpilot
+spec:
+  selector:
+    app.kubernetes.io/name: pgpilot
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+    - name: metrics
+      port: 9090
+      targetPort: metrics
