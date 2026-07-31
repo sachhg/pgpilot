@@ -62,8 +62,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compares the policies on a synthetic mixed workload with no database, and an
   integration test asserts reads spread across both replicas. Rationale in
   `docs/adr/0009-routing-policy-engine.md`.
+- Observability (Phase 9): `internal/metrics` exposes Prometheus metrics —
+  session counts, routing decisions by target and reason, fence fallbacks,
+  a per-target query-latency histogram (p50/p95/p99), and scrape-time gauges for
+  per-backend health, replication lag, and pool saturation, alongside the Go
+  runtime and process collectors. When `observability.metrics_addr` is set,
+  pgpilot serves them at `/metrics` on a dedicated HTTP server, with the
+  `net/http/pprof` handlers behind an opt-in `pprof` flag. Every routing decision
+  is logged at debug with its session id, and a Grafana dashboard is checked in
+  at `grafana/pgpilot-dashboard.json`. Rationale in
+  `docs/adr/0010-observability.md`.
 
 ### Dependencies
+
+- Added `github.com/prometheus/client_golang` v1.20.5 — pinned to the newest
+  release that keeps the module's `go 1.22` floor (later versions raise it) — for
+  the metrics endpoint.
 
 - Added `github.com/jackc/pgx/v5` v5.7.1 (pinned to keep the module's `go 1.22`
   floor) for its `pgproto3` wire-protocol codec.
