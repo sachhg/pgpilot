@@ -7,8 +7,18 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// simpleProtocol makes pgx send simple Query messages rather than the extended
+// Parse/Bind/Execute. This matters for a fair benchmark: pgpilot routes only the
+// simple query protocol — the extended protocol pins a session to the primary by
+// design (ADR 0008) — and pgbouncer's transaction pooling dislikes server-side
+// prepared statements. Using it everywhere keeps the three targets comparable.
+func simpleProtocol(cfg *pgxpool.Config) {
+	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+}
 
 // tableName is the bench table; SetupSchema (re)creates it.
 const tableName = "loadgen_accounts"
@@ -16,7 +26,12 @@ const tableName = "loadgen_accounts"
 // SetupSchema drops and recreates the bench table with rows rows on the backend
 // reachable at connString. It must run against a primary (it writes).
 func SetupSchema(ctx context.Context, connString string, rows int) error {
-	pool, err := pgxpool.New(ctx, connString)
+	cfg, err := pgxpool.ParseConfig(connString)
+	if err != nil {
+		return fmt.Errorf("bench: parse conn string: %w", err)
+	}
+	simpleProtocol(cfg)
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("bench: connect for setup: %w", err)
 	}
@@ -51,6 +66,7 @@ func Run(ctx context.Context, target, connString string, w Workload) (Result, er
 	if err != nil {
 		return Result{}, fmt.Errorf("bench: parse conn string: %w", err)
 	}
+	simpleProtocol(cfg)
 	conns := int32(w.Connections) //nolint:gosec // G115: validated >= 1 above and realistically small
 	cfg.MaxConns = conns
 	cfg.MinConns = conns
