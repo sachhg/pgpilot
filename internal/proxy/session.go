@@ -442,29 +442,33 @@ func (s *session) serveRouting(ctx context.Context, user, database string) error
 			routedFP   string
 		)
 
-		// Choose the target backend when starting a new transaction.
+		// Choose and reach the target backend when starting a new transaction. A
+		// fresh read fails over across eligible replicas and then the primary, so
+		// a backend that dies before it answers never reaches the client as an
+		// error; a write has no healthy alternative and simply acquires the
+		// primary.
 		newlyHeld := false
+		wroteToBackend := false
 		if held == nil {
 			newlyHeld = true
-			target := primary
 			if class == classify.Read {
 				fp := ""
 				if s.policy.NeedsFingerprint() {
 					fp = classify.Fingerprint(sql)
 				}
-				var routed bool
-				if target, routed = s.selectReadTarget(s.registry.Snapshot(), fence, fp, nil); routed {
-					routedAddr, routedFP = target, fp
+				var ok bool
+				held, heldAddr, routedAddr, routedFP, ok = s.dispatchRead(ctx, user, database, full, fence, fp)
+				if !ok {
+					return s.reject("53300", "could not acquire a backend connection")
 				}
-			}
-			held, err = s.manager.AcquireAt(ctx, user, database, target)
-			if err != nil {
-				if routedAddr != "" {
-					s.policy.Release(routedAddr, routedFP, 0)
+				wroteToBackend = true // dispatchRead already sent the query
+			} else {
+				held, err = s.manager.AcquireAt(ctx, user, database, primary)
+				if err != nil {
+					return s.reject("53300", "could not acquire a backend connection")
 				}
-				return s.reject("53300", "could not acquire a backend connection")
+				heldAddr = primary
 			}
-			heldAddr = target
 		}
 		if class == classify.Write && heldAddr == primary {
 			wroteThisTx = true
@@ -472,13 +476,12 @@ func (s *session) serveRouting(ctx context.Context, user, database string) error
 		s.recordDecision(newlyHeld, class, heldAddr, primary, routedAddr != "")
 
 		qStart := time.Now()
-		if _, err := held.NetConn().Write(full); err != nil {
-			if routedAddr != "" {
-				s.policy.Release(routedAddr, routedFP, time.Since(qStart))
+		if !wroteToBackend {
+			if _, err := held.NetConn().Write(full); err != nil {
+				s.manager.DiscardAt(user, database, heldAddr, held)
+				held = nil
+				return nil
 			}
-			s.manager.DiscardAt(user, database, heldAddr, held)
-			held = nil
-			return nil
 		}
 		status, err := relayResponse(s.client, held.NetConn())
 		elapsed := time.Since(qStart)
@@ -570,6 +573,48 @@ func (s *session) selectReadTarget(snapshot []registry.Status, fence uint64, fin
 		return s.cfg.Primary, false
 	}
 	return s.policy.Choose(candidates, fingerprint), true
+}
+
+// dispatchRead acquires a backend for a fresh read and writes the query to it,
+// failing over across eligible replicas and then the primary when a backend
+// cannot be acquired or the write fails before any response has reached the
+// client. Because nothing has been streamed to the client yet, such a retry is
+// invisible to it. On success it returns the held connection, the address it
+// landed on, and the policy selection (routedAddr/routedFP) the caller must
+// Release after relaying; the query has already been written. ok is false only
+// when every candidate — every eligible replica and the primary — failed, in
+// which case the caller rejects. A failure once the relay has begun is not
+// retried here (the client already holds bytes) and drops the session as before.
+func (s *session) dispatchRead(ctx context.Context, user, database string, full []byte, fence uint64, fingerprint string) (held *backend.Conn, heldAddr, routedAddr, routedFP string, ok bool) {
+	exclude := map[string]bool{}
+	for {
+		target, routed := s.selectReadTarget(s.registry.Snapshot(), fence, fingerprint, exclude)
+		conn, err := s.manager.AcquireAt(ctx, user, database, target)
+		if err == nil {
+			_, werr := conn.NetConn().Write(full)
+			if werr == nil {
+				if routed {
+					return conn, target, target, fingerprint, true
+				}
+				return conn, target, "", "", true
+			}
+			// The pooled connection was alive but the backend is gone; the query
+			// never reached it, so discard and try another backend.
+			s.manager.DiscardAt(user, database, target, conn)
+			err = werr
+		}
+		if !routed {
+			// The primary is the last resort; with it unreachable there is no
+			// healthy alternative left, so the read legitimately fails.
+			return nil, "", "", "", false
+		}
+		// A replica failed: release the policy slot its selection took and fail
+		// over to the next eligible backend.
+		s.policy.Release(target, fingerprint, 0)
+		s.metrics.ReadFailover()
+		s.log.Warn("read failover", "from", target, "error", err)
+		exclude[target] = true
+	}
 }
 
 func (s *session) replicaEligible(st registry.Status, fence uint64) bool {
