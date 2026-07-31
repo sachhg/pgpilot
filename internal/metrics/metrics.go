@@ -47,6 +47,7 @@ type Metrics struct {
 	sessionsActive prometheus.Gauge
 	routing        *prometheus.CounterVec
 	fenceFallbacks prometheus.Counter
+	readFailovers  prometheus.Counter
 	queryLatency   *prometheus.HistogramVec
 }
 
@@ -75,6 +76,10 @@ func New() *Metrics {
 			Namespace: namespace, Name: "fence_fallbacks_total",
 			Help: "Reads sent to the primary because no replica had replayed the fence.",
 		}),
+		readFailovers: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: namespace, Name: "read_failovers_total",
+			Help: "Reads that failed on one backend and were retried on another.",
+		}),
 		queryLatency: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: namespace, Name: "query_duration_seconds",
 			Help: "Simple-query round-trip latency, from dispatch to ReadyForQuery.",
@@ -84,7 +89,7 @@ func New() *Metrics {
 	}
 	m.reg.MustRegister(
 		m.sessionsOpened, m.sessionsClosed, m.sessionsActive,
-		m.routing, m.fenceFallbacks, m.queryLatency,
+		m.routing, m.fenceFallbacks, m.readFailovers, m.queryLatency,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -122,6 +127,13 @@ func (m *Metrics) RoutingDecision(target, reason string) {
 func (m *Metrics) FenceFallback() {
 	m.fenceFallbacks.Inc()
 	m.RoutingDecision(TargetPrimary, ReasonFenceFallback)
+}
+
+// ReadFailover records a read that failed on one backend and was retried on
+// another (a replica dying or a severed connection), so it never reached the
+// client as an error.
+func (m *Metrics) ReadFailover() {
+	m.readFailovers.Inc()
 }
 
 // ObserveQueryLatency records a simple query's round-trip latency in seconds

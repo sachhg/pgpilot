@@ -44,10 +44,11 @@ pgpilot now **routes**: it authenticates each client with SCRAM-SHA-256, pools
 connections, classifies each query, and sends writes to the primary and reads to
 a replica — enforcing read-your-writes with a per-session LSN fence — and
 balances reads across eligible replicas with a selectable routing policy
-(round-robin, least-in-flight, or latency-scored). It exposes Prometheus metrics,
-per-session structured logs, and an optional pprof endpoint, and ships a
-reproducible [benchmark suite](#benchmarks) comparing it to a direct connection
-and to pgbouncer.
+(round-robin, least-in-flight, or latency-scored), and **fails a read over** to a
+healthy backend rather than dropping the client when one is down. It exposes
+Prometheus metrics, per-session structured logs, and an optional pprof endpoint,
+and ships a reproducible [benchmark suite](#benchmarks) comparing it to a direct
+connection and to pgbouncer.
 
 ## Roadmap
 
@@ -63,9 +64,9 @@ and to pgbouncer.
 |     7 | LSN fencing                                                  | done   |
 |     8 | Routing policy engine                                        | done   |
 |     9 | Observability (Prometheus, structured logs, pprof)          | done   |
-|    10 | Fault-injection harness                                      |        |
+|    10 | Fault-injection harness                                      | done   |
 |    11 | Benchmarks vs. direct connection and pgbouncer              | done   |
-|    12 | Docs and the v0.1.0 release                                 |        |
+|    12 | Docs and the v0.1.0 release                                 | next   |
 
 ## Technology
 
@@ -176,7 +177,8 @@ The exported metrics cover:
 
 - client sessions (opened, closed, active) and pool saturation (idle/in-use
   connections and waiters per backend);
-- routing decisions by `target` and `reason`, and fence fallbacks;
+- routing decisions by `target` and `reason`, fence fallbacks, and read
+  failovers;
 - query latency as a histogram per target (so p50/p95/p99 come from
   `histogram_quantile`);
 - per-backend health and replication lag (bytes and seconds);
@@ -186,6 +188,23 @@ Every routing decision is also logged at debug with its session id. A ready-made
 Grafana overview is checked in at
 [`grafana/pgpilot-dashboard.json`](grafana/pgpilot-dashboard.json). Design in
 [`docs/adr/0010-observability.md`](docs/adr/0010-observability.md).
+
+### Resilience
+
+When a routed read cannot reach its chosen replica — the backend is down, or a
+pooled connection was severed — pgpilot **fails the read over** to the next
+eligible replica and finally to the primary, rather than dropping the client. The
+retry is invisible because it happens before any response byte is streamed;
+writes and in-transaction statements have no healthy alternative and are not
+retried, and a fault that strikes mid-response drops, as it must. Every failover
+increments `pgpilot_read_failovers_total`.
+
+A test-only in-process fault injector (`internal/faultproxy`) blackholes, severs,
+or slows a backend, and the integration suite asserts the invariants: no read
+dropped while a healthy backend exists, no read lost to a severed connection, no
+stale read in strict mode under fault, and no connection or goroutine leak.
+Design in
+[`docs/adr/0012-fault-tolerance.md`](docs/adr/0012-fault-tolerance.md).
 
 ### Health and replication lag
 
