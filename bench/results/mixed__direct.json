@@ -1,0 +1,12 @@
+{
+  "target": "direct",
+  "duration": 20000068917,
+  "transactions": 391314,
+  "errors": 0,
+  "tps": 19565.632579764973,
+  "mean": 817608,
+  "p50": 602833,
+  "p95": 2092709,
+  "p99": 2927333,
+  "fence_fallback_rate": 0
+}

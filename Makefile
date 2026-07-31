@@ -1,11 +1,12 @@
-BINARY  := pgpilot
-CMD     := ./cmd/pgpilot
-BIN_DIR := bin
-COMPOSE := docker compose
+BINARY   := pgpilot
+CMD      := ./cmd/pgpilot
+BIN_DIR  := bin
+COMPOSE  := docker compose
+BENCH_COMPOSE := docker compose -f bench/docker-compose.bench.yml
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build test lint fmt tidy up down bench smoke itest clean
+.PHONY: help build test lint fmt tidy up down bench bench-up bench-down bench-suite smoke itest clean
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -35,6 +36,15 @@ down: ## Tear the cluster down and delete its volumes
 
 bench: ## Run Go benchmarks
 	go test -run '^$$' -bench=. -benchmem ./...
+
+bench-up: ## Bring up pgbouncer for the benchmark suite (needs `make up`)
+	$(BENCH_COMPOSE) up -d --wait
+
+bench-down: ## Tear down the benchmark pgbouncer
+	$(BENCH_COMPOSE) down
+
+bench-suite: ## Run the full benchmark suite (needs `make up` and `make bench-up`)
+	./bench/run.sh
 
 smoke: ## Run the cluster smoke test (needs `make up` first)
 	go test -tags=integration -count=1 -v ./test/smoke/...

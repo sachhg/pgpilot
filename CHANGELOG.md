@@ -72,12 +72,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is logged at debug with its session id, and a Grafana dashboard is checked in
   at `grafana/pgpilot-dashboard.json`. Rationale in
   `docs/adr/0010-observability.md`.
+- Benchmark suite (Phase 11): a custom read-heavy load generator (`cmd/loadgen`,
+  on `internal/bench`) reporting throughput, p50/p95/p99, and the fence-fallback
+  rate from pgpilot's metrics; a pgbouncer compose overlay; a driver
+  (`bench/run.sh`, `make bench-suite`) that runs the matrix against a direct
+  connection, pgbouncer, and pgpilot (strict and relaxed) plus a pgbench TPC-B
+  baseline; and `cmd/benchreport`, which renders a results table and pure-Go SVG
+  charts. Reference results on an Apple M3 Pro are checked in under
+  `bench/results/`, published with methodology and the cases where pgpilot loses
+  in the README. Rationale in `docs/adr/0011-benchmark-methodology.md`.
 
 ### Dependencies
 
 - Added `github.com/prometheus/client_golang` v1.20.5 — pinned to the newest
   release that keeps the module's `go 1.22` floor (later versions raise it) — for
   the metrics endpoint.
+- The benchmark load generator uses `pgxpool` from the already-required
+  `github.com/jackc/pgx/v5` module (no new direct dependency and the pinned pgx
+  version is unchanged); its pooling primitive `github.com/jackc/puddle/v2` is
+  pulled in indirectly.
 
 - Added `github.com/jackc/pgx/v5` v5.7.1 (pinned to keep the module's `go 1.22`
   floor) for its `pgproto3` wire-protocol codec.

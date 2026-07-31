@@ -1,0 +1,12 @@
+{
+  "target": "pgpilot-relaxed",
+  "duration": 20000324167,
+  "transactions": 177004,
+  "errors": 0,
+  "tps": 8850.056555185834,
+  "mean": 1807641,
+  "p50": 1535375,
+  "p95": 3428792,
+  "p99": 4624542,
+  "fence_fallback_rate": 0
+}
