@@ -1,0 +1,133 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "Prometheus data source scraping pgpilot's /metrics endpoint.",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "title": "pgpilot",
+  "uid": "pgpilot-overview",
+  "tags": ["pgpilot", "postgres", "routing"],
+  "schemaVersion": 39,
+  "editable": true,
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "10s",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Active client sessions",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "refId": "A", "expr": "pgpilot_sessions_active", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Backend health",
+      "description": "1 = healthy, 0 = circuit breaker tripped.",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "refId": "A", "expr": "pgpilot_backend_healthy", "legendFormat": "{{backend}} ({{role}})", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Goroutines",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "refId": "A", "expr": "go_goroutines", "legendFormat": "goroutines", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Session churn (per second)",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "refId": "A", "expr": "rate(pgpilot_sessions_opened_total[5m])", "legendFormat": "opened", "datasource": { "type": "prometheus", "uid": "${datasource}" } },
+        { "refId": "B", "expr": "rate(pgpilot_sessions_closed_total[5m])", "legendFormat": "closed", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Routing decisions (per second)",
+      "description": "Where statements were sent and why.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "refId": "A", "expr": "sum by (target, reason) (rate(pgpilot_routing_decisions_total[5m]))", "legendFormat": "{{target}} / {{reason}}", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Fence fallbacks (per second)",
+      "description": "Reads forced to the primary because no replica had replayed the fence.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "refId": "A", "expr": "rate(pgpilot_fence_fallbacks_total[5m])", "legendFormat": "fence fallbacks", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Query latency (p50 / p95 / p99)",
+      "description": "Round-trip latency from dispatch to ReadyForQuery, by target.",
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 13 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.50, sum by (le, target) (rate(pgpilot_query_duration_seconds_bucket[5m])))", "legendFormat": "p50 {{target}}", "datasource": { "type": "prometheus", "uid": "${datasource}" } },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le, target) (rate(pgpilot_query_duration_seconds_bucket[5m])))", "legendFormat": "p95 {{target}}", "datasource": { "type": "prometheus", "uid": "${datasource}" } },
+        { "refId": "C", "expr": "histogram_quantile(0.99, sum by (le, target) (rate(pgpilot_query_duration_seconds_bucket[5m])))", "legendFormat": "p99 {{target}}", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Replication lag (seconds)",
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 13 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "refId": "A", "expr": "pgpilot_backend_lag_seconds", "legendFormat": "{{backend}}", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Pool connections by state",
+      "description": "Idle vs in-use pooled backend connections, per backend.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "refId": "A", "expr": "pgpilot_pool_connections", "legendFormat": "{{backend}} {{state}}", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Pool waiters",
+      "description": "Clients blocked waiting for a pooled connection (backpressure).",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "refId": "A", "expr": "pgpilot_pool_waiters", "legendFormat": "{{backend}}", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+      ]
+    }
+  ]
+}
