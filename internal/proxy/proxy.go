@@ -16,6 +16,7 @@ import (
 
 	"github.com/sachhg/pgpilot/internal/backend"
 	"github.com/sachhg/pgpilot/internal/config"
+	"github.com/sachhg/pgpilot/internal/metrics"
 	"github.com/sachhg/pgpilot/internal/protocol"
 	"github.com/sachhg/pgpilot/internal/registry"
 	"github.com/sachhg/pgpilot/internal/router"
@@ -36,6 +37,9 @@ type Config struct {
 	// Policy selects which eligible replica serves each read. Nil resolves the
 	// policy named in Users.Routing.Policy, defaulting to least-in-flight.
 	Policy router.Policy
+	// Metrics receives instrumentation. Nil creates a private, unexported
+	// instance so the proxy still runs (its metrics are simply not served).
+	Metrics *metrics.Metrics
 	// Logger receives structured logs. Nil selects slog.Default.
 	Logger *slog.Logger
 }
@@ -43,9 +47,10 @@ type Config struct {
 // Server is pgpilot's client-facing proxy. Construct it with New, then call
 // Listen and Serve.
 type Server struct {
-	cfg    Config
-	log    *slog.Logger
-	policy router.Policy
+	cfg     Config
+	log     *slog.Logger
+	policy  router.Policy
+	metrics *metrics.Metrics
 
 	sessions atomic.Uint64
 	wg       sync.WaitGroup
@@ -60,7 +65,11 @@ func New(cfg Config) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{cfg: cfg, log: logger, policy: resolvePolicy(cfg)}
+	m := cfg.Metrics
+	if m == nil {
+		m = metrics.New()
+	}
+	return &Server{cfg: cfg, log: logger, policy: resolvePolicy(cfg), metrics: m}
 }
 
 // resolvePolicy returns cfg.Policy, or constructs the policy named in the config
@@ -146,6 +155,8 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 	id := s.sessions.Add(1)
 	log := s.log.With("session", id, "client", client.RemoteAddr().String())
 	log.Info("session opened")
+	s.metrics.SessionOpened()
+	defer s.metrics.SessionClosed()
 
 	sess := &session{
 		client:   client,
@@ -153,6 +164,7 @@ func (s *Server) handle(ctx context.Context, client net.Conn) {
 		manager:  s.cfg.Manager,
 		registry: s.cfg.Registry,
 		policy:   s.policy,
+		metrics:  s.metrics,
 		log:      log,
 		tracker:  &protocol.TxTracker{},
 	}
