@@ -453,7 +453,7 @@ func (s *session) serveRouting(ctx context.Context, user, database string) error
 					fp = classify.Fingerprint(sql)
 				}
 				var routed bool
-				if target, routed = s.chooseReadTarget(fence, fp); routed {
+				if target, routed = s.selectReadTarget(s.registry.Snapshot(), fence, fp, nil); routed {
 					routedAddr, routedFP = target, fp
 				}
 			}
@@ -548,15 +548,17 @@ func (s *session) recordDecision(newlyHeld bool, class classify.Class, heldAddr,
 	s.log.Debug("routing", "target", target, "reason", reason, "backend", heldAddr)
 }
 
-// chooseReadTarget picks a backend to serve a read under the current fence and
-// fencing mode. It collects the replicas eligible to serve the read and lets the
-// routing policy choose among them; routed reports whether the policy was
-// consulted (true) or the read fell back to the primary because no replica
-// qualified (false), so the caller knows whether it owes the policy a Release.
-func (s *session) chooseReadTarget(fence uint64, fingerprint string) (addr string, routed bool) {
+// selectReadTarget picks a backend to serve a read from a health snapshot under
+// the current fence and fencing mode, skipping any address in exclude (backends
+// already tried and failed this statement). It lets the routing policy choose
+// among the eligible replicas; routed reports whether the policy was consulted
+// (true) or the read fell back to the primary because no eligible replica
+// remained (false), so the caller knows whether it owes the policy a Release.
+// Taking the snapshot as an argument keeps it pure and unit-testable.
+func (s *session) selectReadTarget(snapshot []registry.Status, fence uint64, fingerprint string, exclude map[string]bool) (addr string, routed bool) {
 	var candidates []router.Candidate
-	for _, st := range s.registry.Snapshot() {
-		if st.Role == registry.RoleReplica && st.Healthy && s.replicaEligible(st, fence) {
+	for _, st := range snapshot {
+		if st.Role == registry.RoleReplica && st.Healthy && !exclude[st.Addr] && s.replicaEligible(st, fence) {
 			candidates = append(candidates, router.Candidate{
 				Addr:       st.Addr,
 				LagBytes:   st.LagBytes,
