@@ -1,0 +1,12 @@
+{
+  "target": "pgbouncer",
+  "duration": 20000120625,
+  "transactions": 323208,
+  "errors": 0,
+  "tps": 16160.302533175345,
+  "mean": 989933,
+  "p50": 791750,
+  "p95": 2027417,
+  "p99": 2630917,
+  "fence_fallback_rate": 0
+}

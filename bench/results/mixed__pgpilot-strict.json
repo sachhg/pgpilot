@@ -1,0 +1,12 @@
+{
+  "target": "pgpilot-strict",
+  "duration": 20000152333,
+  "transactions": 177583,
+  "errors": 0,
+  "tps": 8879.082371137258,
+  "mean": 1801757,
+  "p50": 1532375,
+  "p95": 3401959,
+  "p99": 4739667,
+  "fence_fallback_rate": 0.998247490885545
+}
