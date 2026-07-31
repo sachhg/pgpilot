@@ -81,6 +81,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   charts. Reference results on an Apple M3 Pro are checked in under
   `bench/results/`, published with methodology and the cases where pgpilot loses
   in the README. Rationale in `docs/adr/0011-benchmark-methodology.md`.
+- Fault tolerance (Phase 10): a routed read now **fails over** to the next
+  eligible replica and finally the primary when a backend cannot be reached
+  before any response has been streamed, rather than dropping the client; each
+  failover increments `pgpilot_read_failovers_total`. A test-only in-process
+  fault injector (`internal/faultproxy`) blackholes, severs, and slows backends,
+  and the integration suite asserts the invariants — no read dropped while a
+  healthy backend exists, no read lost to a severed connection, no stale read in
+  strict mode under fault, and no connection or goroutine leak. Rationale in
+  `docs/adr/0012-fault-tolerance.md`.
 
 ### Dependencies
 

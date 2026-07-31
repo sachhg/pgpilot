@@ -78,12 +78,13 @@
     },
     {
       "type": "timeseries",
-      "title": "Fence fallbacks (per second)",
-      "description": "Reads forced to the primary because no replica had replayed the fence.",
+      "title": "Fence fallbacks & read failovers (per second)",
+      "description": "Reads forced to the primary because no replica had replayed the fence, and reads that failed on one backend and were retried on another.",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
-        { "refId": "A", "expr": "rate(pgpilot_fence_fallbacks_total[5m])", "legendFormat": "fence fallbacks", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+        { "refId": "A", "expr": "rate(pgpilot_fence_fallbacks_total[5m])", "legendFormat": "fence fallbacks", "datasource": { "type": "prometheus", "uid": "${datasource}" } },
+        { "refId": "B", "expr": "rate(pgpilot_read_failovers_total[5m])", "legendFormat": "read failovers", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
       ]
     },
     {
