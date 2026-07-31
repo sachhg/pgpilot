@@ -92,6 +92,48 @@ func (m *Manager) DiscardAt(user, database, addr string, c *Conn) {
 	_ = c.Close()
 }
 
+// PoolStat is one backend's pool occupancy, summed across the (user, database)
+// pools that share a backend address so each address reports one figure.
+type PoolStat struct {
+	Addr    string
+	Idle    int
+	InUse   int
+	Waiters int
+}
+
+// StatsByAddr returns pool occupancy aggregated per backend address. It snapshots
+// the pool set under the lock, then reads each pool's stats without holding it.
+func (m *Manager) StatsByAddr() []PoolStat {
+	m.mu.Lock()
+	type entry struct {
+		addr string
+		p    *pool.Pool
+	}
+	snap := make([]entry, 0, len(m.pools))
+	for key, p := range m.pools {
+		snap = append(snap, entry{key.addr, p})
+	}
+	m.mu.Unlock()
+
+	byAddr := make(map[string]*PoolStat)
+	for _, e := range snap {
+		s := e.p.Stats()
+		agg := byAddr[e.addr]
+		if agg == nil {
+			agg = &PoolStat{Addr: e.addr}
+			byAddr[e.addr] = agg
+		}
+		agg.Idle += s.Idle
+		agg.InUse += s.InUse
+		agg.Waiters += s.Waiters
+	}
+	out := make([]PoolStat, 0, len(byAddr))
+	for _, s := range byAddr {
+		out = append(out, *s)
+	}
+	return out
+}
+
 // Close closes every pool.
 func (m *Manager) Close() {
 	m.mu.Lock()
