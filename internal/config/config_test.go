@@ -139,6 +139,31 @@ func TestLoad_Fencing(t *testing.T) {
 	}
 }
 
+func TestLoad_Observability(t *testing.T) {
+	path := writeConfig(t, `{
+		"listen": "x", "primary": "y",
+		"users": [{"name": "u", "password": "p"}],
+		"observability": {"metrics_addr": "127.0.0.1:9090", "pprof": true}
+	}`)
+	c, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Observability.MetricsAddr != "127.0.0.1:9090" || !c.Observability.Pprof {
+		t.Errorf("observability = %+v", c.Observability)
+	}
+
+	// Omitted: the endpoint is disabled and pprof is off.
+	def := writeConfig(t, `{"listen":"x","primary":"y","users":[{"name":"u","password":"p"}]}`)
+	dc, err := config.Load(def)
+	if err != nil {
+		t.Fatalf("Load default: %v", err)
+	}
+	if dc.Observability.MetricsAddr != "" || dc.Observability.Pprof {
+		t.Errorf("default observability = %+v, want disabled", dc.Observability)
+	}
+}
+
 func TestLoad_Routing(t *testing.T) {
 	path := writeConfig(t, `{
 		"listen": "x", "primary": "y",
