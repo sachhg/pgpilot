@@ -20,7 +20,7 @@ func TestProxy_RoundRobinSpreadsReadsAcrossReplicas(t *testing.T) {
 	resumeReplication(t, compose)
 	// Relaxed fencing keeps every healthy replica eligible, isolating the test to
 	// the policy's distribution rather than the fence.
-	port := startRoutingProxy(t, config.FenceRelaxed, router.NewRoundRobin())
+	port := startRoutingProxy(t, config.FenceRelaxed, router.NewRoundRobin(), nil)
 
 	seen := map[string]int{}
 	const reads = 6
