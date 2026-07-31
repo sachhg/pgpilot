@@ -11,12 +11,16 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/sachhg/pgpilot/internal/backend"
 	"github.com/sachhg/pgpilot/internal/config"
+	"github.com/sachhg/pgpilot/internal/metrics"
 	"github.com/sachhg/pgpilot/internal/proxy"
 	"github.com/sachhg/pgpilot/internal/registry"
 	"github.com/sachhg/pgpilot/internal/router"
@@ -97,12 +101,17 @@ func run(args []string) error {
 		return err
 	}
 
+	m := metrics.New()
+	m.EnableStateCollector(stateSource{reg: reg, mgr: mgr})
+	serveObservability(ctx, cfg.Observability, m, logger)
+
 	srv := proxy.New(proxy.Config{
 		ListenAddr: cfg.Listen,
 		Users:      cfg,
 		Manager:    mgr,
 		Registry:   reg,
 		Policy:     policy,
+		Metrics:    m,
 		Logger:     logger,
 	})
 	addr, err := srv.Listen()
@@ -118,6 +127,70 @@ func run(args []string) error {
 	reg.Wait()
 	logger.Info("pgpilot stopped")
 	return nil
+}
+
+// stateSource adapts the registry and connection manager to the metrics state
+// collector, which reads them fresh on every scrape.
+type stateSource struct {
+	reg *registry.Registry
+	mgr *backend.Manager
+}
+
+func (s stateSource) BackendStats() []metrics.BackendStat {
+	snap := s.reg.Snapshot()
+	out := make([]metrics.BackendStat, len(snap))
+	for i, st := range snap {
+		out[i] = metrics.BackendStat{
+			Addr:       st.Addr,
+			Role:       st.Role.String(),
+			Healthy:    st.Healthy,
+			LagBytes:   st.LagBytes,
+			LagSeconds: st.LagSeconds,
+		}
+	}
+	return out
+}
+
+func (s stateSource) PoolStats() []metrics.PoolStat {
+	stats := s.mgr.StatsByAddr()
+	out := make([]metrics.PoolStat, len(stats))
+	for i, p := range stats {
+		out[i] = metrics.PoolStat{Addr: p.Addr, Idle: p.Idle, InUse: p.InUse, Waiters: p.Waiters}
+	}
+	return out
+}
+
+// serveObservability starts the metrics (and optional pprof) HTTP endpoint when
+// configured, shutting it down when ctx is cancelled. An empty address disables
+// it entirely.
+func serveObservability(ctx context.Context, o config.Observability, m *metrics.Metrics, log *slog.Logger) {
+	if o.MetricsAddr == "" {
+		return
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", m.Handler())
+	if o.Pprof {
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	}
+	srv := &http.Server{Addr: o.MetricsAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	// A fresh context on purpose: ctx is already cancelled by the time this
+	// fires, so reusing it would abort the shutdown grace period immediately.
+	go func() { //nolint:gosec // G118: intentional fresh deadline for graceful shutdown
+		<-ctx.Done()
+		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(sctx)
+	}()
+	log.Info("observability endpoint", "addr", o.MetricsAddr, "pprof", o.Pprof)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("observability server failed", "error", err)
+		}
+	}()
 }
 
 // backendsFrom builds the registry's backend list from the config: the primary

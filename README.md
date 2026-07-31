@@ -44,7 +44,8 @@ pgpilot now **routes**: it authenticates each client with SCRAM-SHA-256, pools
 connections, classifies each query, and sends writes to the primary and reads to
 a replica — enforcing read-your-writes with a per-session LSN fence — and
 balances reads across eligible replicas with a selectable routing policy
-(round-robin, least-in-flight, or latency-scored). Observability comes next.
+(round-robin, least-in-flight, or latency-scored). It exposes Prometheus metrics,
+per-session structured logs, and an optional pprof endpoint.
 
 ## Roadmap
 
@@ -59,8 +60,8 @@ balances reads across eligible replicas with a selectable routing policy
 |     6 | Replica registry, health polling, circuit breakers          | done   |
 |     7 | LSN fencing                                                  | done   |
 |     8 | Routing policy engine                                        | done   |
-|     9 | Observability (Prometheus, structured logs, pprof)          | next   |
-|    10 | Fault-injection harness                                      |        |
+|     9 | Observability (Prometheus, structured logs, pprof)          | done   |
+|    10 | Fault-injection harness                                      | next   |
 |    11 | Benchmarks vs. direct connection and pgbouncer              |        |
 |    12 | Docs and the v0.1.0 release                                 |        |
 
@@ -73,7 +74,8 @@ balances reads across eligible replicas with a selectable routing policy
   rather than v5, which no longer builds on recent macOS SDKs; this makes the
   build require a C compiler (cgo).
 - [`prometheus/client_golang`](https://github.com/prometheus/client_golang) —
-  metrics
+  metrics. Pinned to v1.20.5, the newest release that keeps the module's
+  `go 1.22` floor.
 
 ## Quick start
 
@@ -108,7 +110,8 @@ pgpilot reads a JSON config file (see [`pgpilot.example.json`](pgpilot.example.j
   "pool": {"mode": "session", "max_size": 10, "acquire_timeout": "5s", "idle_timeout": "5m"},
   "health": {"interval": "1s", "failure_threshold": 3, "base_backoff": "1s", "max_backoff": "30s"},
   "fencing": {"mode": "strict", "bounded_ms": 100},
-  "routing": {"policy": "least-in-flight"}
+  "routing": {"policy": "least-in-flight"},
+  "observability": {"metrics_addr": "127.0.0.1:9090", "pprof": true}
 }
 ```
 
@@ -162,6 +165,25 @@ one *does* when more than one qualifies:
 simulation comparing the policies on a synthetic mixed workload with no database.
 Design in
 [`docs/adr/0009-routing-policy-engine.md`](docs/adr/0009-routing-policy-engine.md).
+
+### Observability
+
+Set `observability.metrics_addr` to serve Prometheus metrics at `/metrics` (and,
+with `"pprof": true`, the `net/http/pprof` handlers) on a dedicated HTTP server.
+The exported metrics cover:
+
+- client sessions (opened, closed, active) and pool saturation (idle/in-use
+  connections and waiters per backend);
+- routing decisions by `target` and `reason`, and fence fallbacks;
+- query latency as a histogram per target (so p50/p95/p99 come from
+  `histogram_quantile`);
+- per-backend health and replication lag (bytes and seconds);
+- the Go runtime and process (goroutines, memory, CPU, open FDs).
+
+Every routing decision is also logged at debug with its session id. A ready-made
+Grafana overview is checked in at
+[`grafana/pgpilot-dashboard.json`](grafana/pgpilot-dashboard.json). Design in
+[`docs/adr/0010-observability.md`](docs/adr/0010-observability.md).
 
 ### Health and replication lag
 

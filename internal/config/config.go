@@ -16,14 +16,25 @@ import (
 
 // Config is the top-level pgpilot configuration.
 type Config struct {
-	Listen   string   `json:"listen"`
-	Primary  string   `json:"primary"`
-	Replicas []string `json:"replicas"`
-	Users    []User   `json:"users"`
-	Pool     Pool     `json:"pool"`
-	Health   Health   `json:"health"`
-	Fencing  Fencing  `json:"fencing"`
-	Routing  Routing  `json:"routing"`
+	Listen        string        `json:"listen"`
+	Primary       string        `json:"primary"`
+	Replicas      []string      `json:"replicas"`
+	Users         []User        `json:"users"`
+	Pool          Pool          `json:"pool"`
+	Health        Health        `json:"health"`
+	Fencing       Fencing       `json:"fencing"`
+	Routing       Routing       `json:"routing"`
+	Observability Observability `json:"observability"`
+}
+
+// Observability configures the metrics and profiling HTTP endpoint.
+type Observability struct {
+	// MetricsAddr is the listen address for the Prometheus /metrics endpoint
+	// (e.g. "127.0.0.1:9090"). Empty disables the endpoint entirely.
+	MetricsAddr string `json:"metrics_addr"`
+	// Pprof also serves net/http/pprof handlers on the metrics endpoint. It has
+	// no effect unless MetricsAddr is set.
+	Pprof bool `json:"pprof"`
 }
 
 // Routing configures how reads are balanced across the replicas eligible to

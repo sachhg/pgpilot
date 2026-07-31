@@ -19,6 +19,7 @@ import (
 	"github.com/sachhg/pgpilot/internal/classify"
 	"github.com/sachhg/pgpilot/internal/config"
 	"github.com/sachhg/pgpilot/internal/detect"
+	"github.com/sachhg/pgpilot/internal/metrics"
 	"github.com/sachhg/pgpilot/internal/protocol"
 	"github.com/sachhg/pgpilot/internal/registry"
 	"github.com/sachhg/pgpilot/internal/router"
@@ -42,6 +43,7 @@ type session struct {
 	manager  *backend.Manager
 	registry *registry.Registry
 	policy   router.Policy
+	metrics  *metrics.Metrics
 	log      *slog.Logger
 	tracker  *protocol.TxTracker
 }
@@ -412,6 +414,7 @@ func (s *session) serveRouting(ctx context.Context, user, database string) error
 				}
 				heldAddr = primary
 			}
+			s.metrics.RoutingDecision(metrics.TargetPrimary, metrics.ReasonExtended)
 			if _, err := held.NetConn().Write(full); err != nil {
 				s.manager.DiscardAt(user, database, heldAddr, held)
 				held = nil
@@ -437,11 +440,12 @@ func (s *session) serveRouting(ctx context.Context, user, database string) error
 		var (
 			routedAddr string
 			routedFP   string
-			readStart  time.Time
 		)
 
 		// Choose the target backend when starting a new transaction.
+		newlyHeld := false
 		if held == nil {
+			newlyHeld = true
 			target := primary
 			if class == classify.Read {
 				fp := ""
@@ -465,23 +469,24 @@ func (s *session) serveRouting(ctx context.Context, user, database string) error
 		if class == classify.Write && heldAddr == primary {
 			wroteThisTx = true
 		}
+		s.recordDecision(newlyHeld, class, heldAddr, primary, routedAddr != "")
 
-		if routedAddr != "" {
-			readStart = time.Now()
-		}
+		qStart := time.Now()
 		if _, err := held.NetConn().Write(full); err != nil {
 			if routedAddr != "" {
-				s.policy.Release(routedAddr, routedFP, time.Since(readStart))
+				s.policy.Release(routedAddr, routedFP, time.Since(qStart))
 			}
 			s.manager.DiscardAt(user, database, heldAddr, held)
 			held = nil
 			return nil
 		}
 		status, err := relayResponse(s.client, held.NetConn())
+		elapsed := time.Since(qStart)
 		if routedAddr != "" {
 			// The read has run to ReadyForQuery; release it whatever the outcome.
-			s.policy.Release(routedAddr, routedFP, time.Since(readStart))
+			s.policy.Release(routedAddr, routedFP, elapsed)
 		}
+		s.metrics.ObserveQueryLatency(targetLabel(heldAddr, primary), elapsed.Seconds())
 		if err != nil {
 			s.manager.DiscardAt(user, database, heldAddr, held)
 			held = nil
@@ -510,6 +515,37 @@ func (s *session) serveRouting(ctx context.Context, user, database string) error
 		s.manager.ReleaseAt(user, database, heldAddr, held)
 		held = nil
 	}
+}
+
+// targetLabel maps a backend address to its metrics target label.
+func targetLabel(addr, primary string) string {
+	if addr == primary {
+		return metrics.TargetPrimary
+	}
+	return metrics.TargetReplica
+}
+
+// recordDecision records one routing decision per statement, as a metric and a
+// debug log carrying the session id. A statement served by an already-held
+// backend is "pinned" (an open transaction or a session-state statement); a
+// fresh read on a replica is a "read"; a fresh read forced to the primary for
+// lack of an eligible replica is a fence fallback; a fresh write is a "write".
+func (s *session) recordDecision(newlyHeld bool, class classify.Class, heldAddr, primary string, routedToReplica bool) {
+	var target, reason string
+	switch {
+	case !newlyHeld:
+		target, reason = targetLabel(heldAddr, primary), metrics.ReasonPinned
+	case class == classify.Read && routedToReplica:
+		target, reason = metrics.TargetReplica, metrics.ReasonRead
+	case class == classify.Read:
+		s.metrics.FenceFallback()
+		s.log.Debug("routing", "target", metrics.TargetPrimary, "reason", metrics.ReasonFenceFallback, "backend", heldAddr)
+		return
+	default:
+		target, reason = metrics.TargetPrimary, metrics.ReasonWrite
+	}
+	s.metrics.RoutingDecision(target, reason)
+	s.log.Debug("routing", "target", target, "reason", reason, "backend", heldAddr)
 }
 
 // chooseReadTarget picks a backend to serve a read under the current fence and
