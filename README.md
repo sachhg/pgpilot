@@ -10,8 +10,8 @@
 Read replicas scale reads, but they lag. The moment you route a read to a
 replica you risk a *read-your-writes* violation: a user updates their profile,
 the next page load lands on a replica that has not yet replayed that write, and
-they see stale data. The usual mitigation — "only send reads to a replica when
-its lag is low" — is probabilistic. It reduces the odds of a stale read; it does
+they see stale data. The usual mitigation ("only send reads to a replica when
+its lag is low") is probabilistic. It reduces the odds of a stale read; it does
 not eliminate them.
 
 ## What pgpilot is
@@ -27,22 +27,22 @@ lag stays low.
 
 ### Consistency modes
 
-- **strict** — always fence; a read never observes a value older than this
+- **strict**: always fence; a read never observes a value older than this
   session's most recent write.
-- **bounded** — allow staleness up to N milliseconds.
-- **relaxed** — lag-only routing, no fencing.
+- **bounded**: allow staleness up to N milliseconds.
+- **relaxed**: lag-only routing, no fencing.
 
 ## Non-goals
 
 Sharding, query rewriting, multi-master, and a GUI are explicitly out of scope.
-The goal is to do one thing — correct, observable read/write routing — well.
+The goal is to do one thing (correct, observable read/write routing) well.
 
 ## Status
 
 Early development, built in phases (see the roadmap). Not production-ready yet.
 pgpilot now **routes**: it authenticates each client with SCRAM-SHA-256, pools
 connections, classifies each query, and sends writes to the primary and reads to
-a replica — enforcing read-your-writes with a per-session LSN fence — and
+a replica, enforcing read-your-writes with a per-session LSN fence, and
 balances reads across eligible replicas with a selectable routing policy
 (round-robin, least-in-flight, or latency-scored), and **fails a read over** to a
 healthy backend rather than dropping the client when one is down. It exposes
@@ -70,22 +70,22 @@ connection and to pgbouncer.
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) — component map and the request lifecycle,
+- [Architecture](docs/architecture.md): component map and the request lifecycle,
   with diagrams.
-- [Decision records](docs/adr/) — every design decision and the alternatives
+- [Decision records](docs/adr/): every design decision and the alternatives
   rejected, indexed in [`docs/adr/README.md`](docs/adr/README.md).
-- [Deploying on Kubernetes](k8s/README.md) — manifests and a `Dockerfile`.
-- [Guided demo](docs/demo.sh) — a scripted, asciinema-ready walkthrough.
+- [Deploying on Kubernetes](k8s/README.md): manifests and a `Dockerfile`.
+- [Guided demo](docs/demo.sh): a scripted, asciinema-ready walkthrough.
 
 ## Technology
 
 - Go 1.22+, standard library first
-- [`jackc/pgx/v5/pgproto3`](https://github.com/jackc/pgx) — wire protocol codec
-- [`pganalyze/pg_query_go`](https://github.com/pganalyze/pg_query_go) — the real
+- [`jackc/pgx/v5/pgproto3`](https://github.com/jackc/pgx): wire protocol codec
+- [`pganalyze/pg_query_go`](https://github.com/pganalyze/pg_query_go): the real
   Postgres parser, for query classification and feature detection. Uses v6
   rather than v5, which no longer builds on recent macOS SDKs; this makes the
   build require a C compiler (cgo).
-- [`prometheus/client_golang`](https://github.com/prometheus/client_golang) —
+- [`prometheus/client_golang`](https://github.com/prometheus/client_golang):
   metrics. Pinned to v1.20.5, the newest release that keeps the module's
   `go 1.22` floor.
 
@@ -144,15 +144,15 @@ automatically). See
 When `replicas` are configured, pgpilot **routes** each query: it classifies it
 with `pg_query`, sends writes to the primary and reads to a replica, and pins an
 explicit transaction to one backend. It enforces **read-your-writes** with a
-per-session LSN fence — after a write commits on the primary, the session's fence
+per-session LSN fence: after a write commits on the primary, the session's fence
 advances to the primary's WAL position, and a subsequent read only goes to a
 replica that has replayed at or past that fence (else it falls back to the
 primary). `fencing.mode` selects the trade-off:
 
-- **`strict`** (default) — a replica serves a read only once it has replayed the
+- **`strict`** (default): a replica serves a read only once it has replayed the
   fence.
-- **`bounded`** — a replica within `bounded_ms` of lag may serve the read.
-- **`relaxed`** — any healthy replica may (lag-only routing).
+- **`bounded`**: a replica within `bounded_ms` of lag may serve the read.
+- **`relaxed`**: any healthy replica may (lag-only routing).
 
 `make itest` includes an acceptance test that pauses replication with
 `pg_wal_replay_pause()` and asserts a write followed by a read never observes a
@@ -164,10 +164,10 @@ stale value under strict mode. Design in
 Fencing decides which replicas *may* serve a read; `routing.policy` decides which
 one *does* when more than one qualifies:
 
-- **`round-robin`** — even rotation across eligible replicas.
-- **`least-in-flight`** (default) — the eligible replica with the fewest reads
+- **`round-robin`**: even rotation across eligible replicas.
+- **`least-in-flight`** (default): the eligible replica with the fewest reads
   outstanding, so a slow or overloaded replica sheds load until it drains.
-- **`scored`** — ranks replicas by estimated completion time,
+- **`scored`**: ranks replicas by estimated completion time,
   `(inFlight + 1) * ewmaLatency(addr, shape) + lagPenalty * lag`, learning each
   query shape's cost per replica (keyed by pg_query fingerprint) so it steers
   expensive shapes away from busy replicas. It costs one fingerprint parse per
@@ -200,8 +200,8 @@ Grafana overview is checked in at
 
 ### Resilience
 
-When a routed read cannot reach its chosen replica — the backend is down, or a
-pooled connection was severed — pgpilot **fails the read over** to the next
+When a routed read cannot reach its chosen replica (the backend is down, or a
+pooled connection was severed), pgpilot **fails the read over** to the next
 eligible replica and finally to the primary, rather than dropping the client. The
 retry is invisible because it happens before any response byte is streamed;
 writes and in-transaction statements have no healthy alternative and are not
@@ -252,7 +252,7 @@ raw results and charts land in [`bench/results/`](bench/results/).
 
 These are **single-machine** numbers: the primary and both replicas share the
 same CPU, so they **cannot** show the horizontal read-scaling win that separate
-replica hardware would give. They isolate two things instead — the cost of the
+replica hardware would give. They isolate two things instead: the cost of the
 proxy hop and routing, and how the read-your-writes fence behaves under writes.
 This is where pgpilot *loses*, published plainly.
 
@@ -275,12 +275,12 @@ of reads pgpilot sent to the primary for read-your-writes:
 
 | target | tps | p50 | p95 | p99 | fence-fallback |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| direct | 19,566 | 603µs | 2.09ms | 2.93ms | — |
-| pgbouncer | 16,160 | 792µs | 2.03ms | 2.63ms | — |
+| direct | 19,566 | 603µs | 2.09ms | 2.93ms | n/a |
+| pgbouncer | 16,160 | 792µs | 2.03ms | 2.63ms | n/a |
 | pgpilot (strict) | 8,879 | 1.53ms | 3.40ms | 4.74ms | **99.8%** |
-| pgpilot (relaxed) | 8,850 | 1.54ms | 3.43ms | 4.62ms | — |
+| pgpilot (relaxed) | 8,850 | 1.54ms | 3.43ms | 4.62ms | n/a |
 
-**pgbench** (TPC-B, write-heavy — WAL/fsync-bound, so pooling matters little):
+**pgbench** (TPC-B, write-heavy, WAL/fsync-bound, so pooling matters little):
 
 | target | tps | latency avg |
 | --- | ---: | ---: |
@@ -298,17 +298,17 @@ of reads pgpilot sent to the primary for read-your-writes:
   a direct connection and below pgbouncer: every query is parsed and classified,
   reads take an extra network hop, and each write costs a `pg_current_wal_lsn()`
   round-trip to advance the fence. That is the price of routing and
-  read-your-writes, and here — with no separate replica hardware to offload onto
-  — there is no throughput upside to offset it.
+  read-your-writes, and here (with no separate replica hardware to offload onto)
+  there is no throughput upside to offset it.
 - **Strict fencing is visible.** Under 20% writes, ~99.8% of reads fall back to
   the primary: read-your-writes, working as designed, keeps a session from
   reading behind its own write. `relaxed` keeps those reads on the replicas, at
-  the cost of possible staleness — the same throughput here only because pgpilot
+  the cost of possible staleness; the same throughput here only because pgpilot
   is proxy-bound, not backend-bound, at this concurrency.
 - **Against pgbouncer**, the honest comparison, pgpilot is slower by the work it
   does that pgbouncer does not: classify every statement, route it, and fence.
   pgpilot's bet is that read scaling and read-your-writes are worth that overhead
-  on real replica hardware — which this single-box benchmark deliberately does
+  on real replica hardware, which this single-box benchmark deliberately does
   not measure.
 
 ## License
