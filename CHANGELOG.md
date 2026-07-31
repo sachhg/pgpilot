@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-07-31
+
+First tagged release: a transparent PostgreSQL router that authenticates clients
+with SCRAM, pools backend connections, classifies each query, routes reads to
+replicas with read-your-writes LSN fencing and a selectable policy, fails reads
+over on backend loss, and exposes Prometheus metrics — with a benchmark suite and
+Kubernetes manifests.
+
 ### Added
 
 - Repository scaffolding (Phase 0): MIT license, README with problem statement
@@ -90,6 +98,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   healthy backend exists, no read lost to a severed connection, no stale read in
   strict mode under fault, and no connection or goroutine leak. Rationale in
   `docs/adr/0012-fault-tolerance.md`.
+- Docs and release (Phase 12): `docs/architecture.md` with a component map and
+  Mermaid diagrams of the session lifecycle and per-query routing; an ADR index
+  at `docs/adr/README.md`; a multi-stage `Dockerfile` (cgo, distroless nonroot,
+  ~60 MB); Kubernetes manifests under `k8s/` (config as a Secret, a hardened
+  Deployment, a Service, and a deployment guide); and a scripted,
+  asciinema-ready demo at `docs/demo.sh`. This is the v0.1.0 release.
 
 ### Dependencies
 
@@ -110,3 +124,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   feature detection and classification. pg_query is cgo, so the build now needs
   a C compiler. `google.golang.org/protobuf` is a direct dependency for the
   reflection-based parse-tree walk.
+
+[Unreleased]: https://github.com/sachhg/pgpilot/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/sachhg/pgpilot/releases/tag/v0.1.0
